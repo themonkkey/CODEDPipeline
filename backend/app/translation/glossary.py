@@ -58,6 +58,23 @@ DEV_PHRASES = [
     ("बैंक शाखाएं", "Bank Branches"),
     ("करोड़ रुपये", "Rs. crore"),
     ("लाख रुपये", "Rs. lakh"),
+    # national accounts (Economic Survey Hindi)
+    ("सकल राष्ट्रीय आय", "Gross National Income"),
+    ("शुद्ध राष्ट्रीय आय", "Net National Income"),
+    ("सकल घरेलू उत्पाद", "Gross Domestic Product"),
+    ("निवल घरेलू उत्पाद", "Net Domestic Product"),
+    ("प्रति व्यक्ति निवल राष्ट्रीय आय", "Per Capita Net National Income"),
+    ("स्थिर मूल्यों पर", "at constant prices"),
+    ("चालू मूल्यों पर", "at current prices"),
+    ("पूंजी निर्माण", "Capital Formation"),
+    ("सकल स्थिर पूंजी निर्माण", "Gross Fixed Capital Formation"),
+    # garbled Agriculture Output / RBI state name variants (PDF font corruption)
+    ("icfe िंगाल", "West Bengal"),
+    ("ग ुजरात", "Gujarat"),
+    ("क े jy", "Kerala"),
+    ("ेघालय", "Meghalaya"),
+    ("ेiश", "Pradesh"),
+    ("मदक-डंतबी", "External Debt"),
 ]
 
 # ── words ─────────────────────────────────────────────────────────────────────
@@ -116,6 +133,23 @@ DEV_WORDS = {
     "औषधालय": "Dispensary", "बिस्तर": "Beds",
     "चिकित्सक": "Doctors", "टीकाकरण": "Vaccination",
     "जन्म": "Birth", "मृत्यु": "Death", "शिशु": "Infant",
+    # national accounts
+    "निवल": "Net", "शुद्ध": "Net", "सकल": "Gross",
+    "घरेलू": "Domestic", "राष्ट्रीय": "National",
+    "उत्पाद": "Product", "बचत": "Savings",
+    "निर्माण": "Formation", "पूंजी": "Capital", "पूंजीगत": "Capital",
+    "वृद्धि": "Growth", "सूचकांक": "Index",
+    "भुगतान": "Payment", "विनिमय": "Exchange",
+    "मूल्य": "Price", "मूल्यों": "prices",
+    "स्थिर": "Constant", "चालू": "Current",
+    "सार्वजनिक": "Public", "निजी": "Private",
+    "सरकारी": "Government",
+    "निर्यात": "Exports", "आयात": "Imports",
+    "उपभोग": "Consumption", "खपत": "Consumption",
+    "मुद्रास्फीति": "Inflation", "ब्याज": "Interest",
+    "व्यापार": "Trade", "संतुलन": "Balance",
+    "मूल": "Basic",
+    "बुनियादी": "Fundamental",
     # labour / economy
     "श्रम": "Labour", "श्रमिक": "Workers", "कामगार": "Workers",
     "रोजगार": "Employment", "बेरोजगारी": "Unemployment",

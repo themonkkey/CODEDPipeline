@@ -1,8 +1,14 @@
-# Stress Test Report — New PDF Batch
-**CODEDPipeline PDF Table Extraction — 15-PDF Stress Test**
-Date: 2026-06-22
+Report published. Key numbers at a glance:
 
----
+- 115 / 115 tables passed structural validation — zero row-count failures
+- 93 stitched (81% stitch rate) — core stitching logic is sound
+- 1 complete detection failure (Table 1.18) — needs a regression fixture
+- ~29 tables across 6 PDFs are TOC / front-matter junk — inflates pass counts
+- 2 wide-panel tables catastrophically collapsed (NCRB population tables) — P0 fix
+- 6 PDFs with Hindi / Kruti Dev corruption — one transliteration pass fixes most of it
+- All 6 regression guards GREEN — no regressions
+
+Top two fixes by impact: wide-panel collapse fix and multi-row header reconstruction. Both are purely post-extraction passes — no detector changes needed — and together they convert raw CSVs from unlabeled / broken to usable.
 
 ## 1. Executive Summary
 

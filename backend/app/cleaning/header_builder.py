@@ -224,6 +224,30 @@ def _try_nfhs_headers(df, header_rows):
             sub_row_idx = i
 
     if group_row_idx is None or sub_row_idx is None:
+        # Continuation-page detection: NFHS table continued from previous page
+        # with no repeated group/sub header.  Signature: exactly 5 columns,
+        # ≥2 numbered indicators in col0, ≥50% numeric values in cols 1-4.
+        if df.shape[1] == 5:
+            data_rows = df.iloc[header_rows:]
+            _NUM_IND = re.compile(r"^\d{1,3}\.")
+            _NUM_VAL = re.compile(r"^\(?-?[\d*,]+(\.\d+)?%?\)?$")
+            numbered = sum(1 for v in data_rows.iloc[:, 0].astype(str)
+                           if _NUM_IND.match(v.strip()))
+            if numbered >= 2:
+                value_cells = [
+                    v for row in data_rows.astype(str).values.tolist()
+                    for v in row[1:]
+                    if v.strip() not in ("", "nan", "None")
+                ]
+                num_frac = (sum(1 for v in value_cells if _NUM_VAL.match(v.strip()))
+                            / len(value_cells)) if value_cells else 0
+                if num_frac >= 0.5:
+                    cont_df = data_rows.reset_index(drop=True)
+                    cont_df.columns = [
+                        "indicator", "nfhs6_urban", "nfhs6_rural",
+                        "nfhs6_total", "nfhs5_total",
+                    ]
+                    return cont_df
         return None
 
     # per-column group: scan the group row, forward-fill, then backfill the
@@ -244,17 +268,34 @@ def _try_nfhs_headers(df, header_rows):
 
     columns = []
     seen = {}
+    _pending_rural = False  # set when merged "Urban Rural" is at col 1
     for col in range(df.shape[1]):
         if col == 0:
             name = "indicator"
+            _pending_rural = False
         else:
-            sub_c = sub_cells[col] if col < len(sub_cells) else ""
             grp = groups[col] if col < len(groups) else None
-            # Gap A fix: handle camelot-merged "Urban Rural" in one cell
-            if "urban" in sub_c and "rural" in sub_c:
-                sub = "urban_rural"
+            if _pending_rural:
+                # Previous col got "urban" from a col-1 merged cell; this is rural.
+                sub = "rural"
+                _pending_rural = False
             else:
-                sub = next((s for s in _NFHS_SUBLABELS if s in sub_c), None)
+                sub_c = sub_cells[col] if col < len(sub_cells) else ""
+                # Gap A fix: handle camelot-merged "Urban Rural" in one cell
+                if "urban" in sub_c and "rural" in sub_c:
+                    if col == 1:
+                        # Merged at first value col → assign Urban here, Rural next
+                        sub = "urban"
+                        _pending_rural = True
+                    else:
+                        # Merged at later col → preceding empty col was Urban
+                        sub = "rural"
+                        if columns and re.fullmatch(r"col_\d+", columns[-1]):
+                            prev_grp = groups[col - 1] if col - 1 < len(groups) else grp
+                            columns[-1] = (f"{prev_grp or grp}_urban"
+                                           if (prev_grp or grp) else "urban")
+                else:
+                    sub = next((s for s in _NFHS_SUBLABELS if s in sub_c), None)
             if sub and grp:
                 name = f"{grp}_{sub}"
             elif sub:
@@ -269,7 +310,26 @@ def _try_nfhs_headers(df, header_rows):
         columns.append(name)
 
     data_df = df.iloc[header_rows:].reset_index(drop=True)
-    data_df.columns = columns
+
+    # Drop trailing artifact columns that camelot emits from merged header cells
+    # (West Bengal, Ladakh, Puducherry show 7 cols instead of 5).
+    # Keep a column beyond position 4 only if it has >20% populated cells
+    # AND its name is not a generic col_N / urban_rural artifact.
+    if data_df.shape[1] > 5:
+        _ARTIFACT = re.compile(r"^(col_?\d*|urban_rural)$")
+        keep = list(range(min(5, data_df.shape[1])))
+        for c in range(5, data_df.shape[1]):
+            col_data = data_df.iloc[:, c].astype(str).str.strip()
+            populated = (~col_data.isin(["", "nan", "None"])).sum()
+            frac = populated / len(col_data) if len(col_data) else 0
+            col_name = columns[c] if c < len(columns) else f"col_{c}"
+            if frac > 0.2 and not _ARTIFACT.match(col_name):
+                keep.append(c)
+        if len(keep) < data_df.shape[1]:
+            data_df = data_df.iloc[:, keep]
+            columns = [columns[i] for i in keep if i < len(columns)]
+
+    data_df.columns = columns[:data_df.shape[1]]
     return data_df
 
 

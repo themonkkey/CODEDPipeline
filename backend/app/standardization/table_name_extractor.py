@@ -3,6 +3,63 @@ import re
 from backend.app.translation.kruti_dev import looks_kruti
 
 
+# Known Indian states/UTs for state-name repair.
+# The NFHS-6 PDF stores some names with embedded spaces ("Ha ryana",
+# "J harkhand") due to font/glyph rendering; _clean_title_words drops
+# the short prefix fragment. We repair by suffix-matching or explicit lookup.
+_INDIA_STATES = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
+    "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram",
+    "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
+    "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Andaman and Nicobar Islands", "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu", "Dadra Nagar Haveli and Daman Diu",
+    "Jammu and Kashmir", "Ladakh", "Lakshadweep", "NCT of Delhi", "Puducherry",
+]
+
+# Explicit map for cases where suffix-matching alone can't recover the name
+# (e.g. "Tam Nadu" ← "Tamil Nadu", "Tel angana" ← "Telangana").
+_STATE_FRAGMENT_MAP = {
+    "tam nadu":   "Tamil Nadu",
+    "tel angana": "Telangana",
+    "of delhi":   "NCT of Delhi",
+}
+
+
+def _repair_state_name(name: str) -> str:
+    """Fix truncated state names in NFHS-style table titles.
+
+    Tries (in order):
+    1. Exact known-state prefix match — already correct, return as-is.
+    2. Explicit fragment map for multi-word edge cases.
+    3. Suffix match: find the known state whose name ends with the fragment.
+    """
+    # Extract the part before "Key Indicators" / "Indicators"
+    m = re.match(r"^(.*?)\s*(Key\s+)?Indicators\b", name, re.IGNORECASE)
+    if not m:
+        return name
+    fragment = m.group(1).strip()
+    suffix = name[m.start(2) or m.end(1):].strip()  # "Key Indicators" or "Indicators"
+
+    # 1. Already a known state name
+    for state in _INDIA_STATES:
+        if fragment.lower() == state.lower():
+            return name  # no repair needed
+
+    # 2. Explicit lookup (for split-word cases like "Tam Nadu", "Tel angana")
+    frag_low = fragment.lower()
+    if frag_low in _STATE_FRAGMENT_MAP:
+        return f"{_STATE_FRAGMENT_MAP[frag_low]} Key Indicators"
+
+    # 3. Suffix match: known state ends with the fragment (e.g. "ryana" ← "Haryana")
+    for state in _INDIA_STATES:
+        if state.lower().endswith(frag_low) and len(frag_low) >= 3:
+            return f"{state} Key Indicators"
+
+    return name  # no match found — leave unchanged
+
+
 TITLE_PATTERN = re.compile(
     r"(Table|Tabel|Statement|Annexure|Appendix)"
     r"[\s\-:.]*"
@@ -121,6 +178,9 @@ def extract_table_name(df, header_rows, caption=None):
                 and not re.search(r"[.;:]\s|\.$", line)
                 and len(cleaned) >= 0.6 * len(line)
             ):
+                # Repair truncated NFHS state names ("ryana" → "Haryana")
+                if re.search(r"\bIndicators?\b", cleaned, re.IGNORECASE):
+                    cleaned = _repair_state_name(cleaned)
                 return cleaned
 
     # 3) no confident title — caller assigns a sequential "Table N"

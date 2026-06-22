@@ -22,6 +22,7 @@ from backend.app.cleaning.header_detector import detect_header_rows
 from backend.app.cleaning.header_postprocessor import clean_headers
 from backend.app.cleaning.universal_cleaner import clean_dataframe
 from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
+from backend.app.cleaning.panel_splitter import split_panels
 from backend.app.extract.table_extractor import extract_tables
 from backend.app.standardization.table_name_extractor import extract_table_name
 from backend.app.standardization.table_stitcher import stitch_tables
@@ -48,6 +49,7 @@ def _pipeline(pdf_path):
     items = []
     for t in extract_tables(pdf_path):
         df = clean_dataframe(t["dataframe"])
+        df = split_panels(df)
         df = reassemble_wrapped_rows(df)
         df = translate_dataframe(df)
         h = detect_header_rows(df)

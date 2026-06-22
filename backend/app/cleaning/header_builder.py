@@ -1,6 +1,7 @@
 import re
 import pandas as pd
 from backend.app.cleaning.data_start_detector import detect_data_start
+from backend.app.cleaning.header_detector import YEAR_PATTERN
 
 DISTRICT_NAMES = {
     "sheopur",
@@ -185,6 +186,16 @@ def clean_header(text):
 
     return "_".join(tokens)
 
+
+# Subdivision-level words that mark a real column-header row (not a title row)
+_SUBDIVISION_VOCAB = re.compile(
+    r"\b(rural|urban|males?|females?|persons?|transgender|total|combined|state|"
+    r"district|zone|region|sector|category|quarterly|annual|monthly|"
+    r"workers?|employed|employment|rate|number|percentage|industry)\b",
+    re.IGNORECASE,
+)
+# Serial-index cells like (1) (2) (3) used as column-numbering rows
+_INDEX_CELL = re.compile(r"^\(?[0-9]{1,2}\.?\)?$")
 
 _NFHS_GROUP = re.compile(r"nfhs[\s\-–]*([0-9])", re.IGNORECASE)
 _NFHS_SUBLABELS = ("urban", "rural", "total")
@@ -388,7 +399,63 @@ def apply_headers(df, header_rows):
     # and filling would leak values into unrelated columns.
     #
 
-    for i in range(max(len(header_df) - 1, 0)):
+    data_df = (
+        df.iloc[header_rows:]
+        .reset_index(drop=True)
+    )
+
+    columns = []
+
+    # Build the set of rows that should NOT contribute to column names:
+    # (a) single-cell spanning rows (table title / subtitle)
+    # (b) prose-description rows — short word-fragments spread across cells
+    #     with no subdivision vocabulary (Rural/Urban/Male/Female/…) and no years
+    # (c) serial index rows like (1) (2) (3) used as column-numbering bands
+    # (d) original _TITLE_FRAGMENT pattern (Table X.Y lone cell)
+    title_rows = set()
+
+    for i in range(len(header_df)):
+
+        cells = [str(v).strip() for v in df.iloc[i].tolist()]
+        non_empty = [c for c in cells if c and c not in ("nan", "None")]
+
+        # (a) single-cell spanning row
+        if len(non_empty) <= 1:
+            title_rows.add(i)
+            continue
+
+        # (d) Table/Tabel X.Y in the first non-empty cell → title row even if
+        #     Camelot spread the rest of the title across sibling cells
+        first_ne = non_empty[0] if non_empty else ""
+        if _TITLE_FRAGMENT.search(first_ne):
+            title_rows.add(i)
+            continue
+
+        # (c) serial index row: majority of non-empty cells are (1)/(2)/…
+        index_like = sum(1 for c in non_empty if _INDEX_CELL.match(c))
+        if index_like >= max(2, len(non_empty) * 0.5):
+            title_rows.add(i)
+            continue
+
+        # (b) prose-description row: all cells are 1-2 words, no statistical
+        #     subdivision vocabulary, no year labels → word-fragments of a title
+        full_text = " ".join(non_empty)
+        all_short = all(len(c.split()) <= 2 for c in non_empty)
+        has_subdiv = bool(_SUBDIVISION_VOCAB.search(full_text))
+        has_year = bool(YEAR_PATTERN.search(full_text))
+        if all_short and not has_subdiv and not has_year and len(non_empty) >= 3:
+            title_rows.add(i)
+
+    # Forward-fill parent group labels into sibling columns.
+    # Skip title/description rows (their word-fragments must not propagate).
+    # Never fill the LAST non-title header row (sub-label row).
+    active_header_rows = [i for i in range(len(header_df)) if i not in title_rows]
+    last_active = active_header_rows[-1] if active_header_rows else None
+
+    for i in range(len(header_df)):
+
+        if i in title_rows or i == last_active:
+            continue
 
         row = header_df.iloc[i].astype(str).str.strip()
 
@@ -404,32 +471,6 @@ def apply_headers(df, header_rows):
         )
 
         header_df.iloc[i] = filled.fillna("")
-
-    data_df = (
-        df.iloc[header_rows:]
-        .reset_index(drop=True)
-    )
-
-    columns = []
-
-    # spanning TITLE rows ("Table (15): Percentage distribution ..."
-    # alone in the row, before ffill spread it) are names, not column
-    # semantics — exclude the whole row. A title-prefixed cell in a row
-    # that has other content is a real header cell and is only
-    # prefix-stripped below.
-    title_rows = set()
-
-    for i in range(len(header_df)):
-
-        cells = [str(v).strip() for v in df.iloc[i].tolist()]
-        non_empty = [c for c in cells if c]
-
-        if (
-            len(non_empty) == 1
-            and _TITLE_FRAGMENT.match(non_empty[0])
-            and len(non_empty[0]) > 40
-        ):
-            title_rows.add(i)
 
     for col in range(df.shape[1]):
 

@@ -201,10 +201,51 @@ def guard_fr375_kpi():
           f"got {too_few} — reasons: {reasons}")
 
 
+def guard_nfhs_docling():
+    """Guard G — NFHS-6 India pp26-28 via Docling ML extractor."""
+    print("Guard G — NFHS-6 Docling path (India pp26-28)")
+    prev = os.environ.get("DOCLING_ENABLED")
+    os.environ["DOCLING_ENABLED"] = "1"
+    try:
+        nfhs = os.path.join(ROOT, "Testpdfs/NFHS-6_FactSheets.pdf")
+        path = _slice(nfhs, 26, 28)
+        items = [i for i in _pipeline(path) if i["passed"]]
+        os.unlink(path)
+    finally:
+        if prev is None:
+            os.environ.pop("DOCLING_ENABLED", None)
+        else:
+            os.environ["DOCLING_ENABLED"] = prev
+
+    check("3 India tables pass (Docling)", len(items) == 3, f"got {len(items)}")
+    want = ["indicator", "nfhs6_urban", "nfhs6_rural", "nfhs6_total", "nfhs5_total"]
+    good_cols = [i for i in items if list(i["df"].columns) == want]
+    check("NFHS columns correct on all 3 (Docling)", len(good_cols) == 3,
+          f"first cols: {list(items[0]['df'].columns) if items else []}")
+    # No col_N fallback columns in any table
+    bad = [i for i in items
+           if any(re.fullmatch(r"col_\d+", c) for c in list(i["df"].columns))]
+    check("0 col_N phantom columns (Docling)", not bad,
+          f"{len(bad)} tables with col_N columns")
+    # Row 41 must be on one row (no wrap split)
+    if len(items) >= 2:
+        body = items[1]["df"]
+        row41 = body[body.iloc[:, 0].astype(str).str.startswith("41.")]
+        ok = (not row41.empty
+              and re.match(r"^88\.6$", str(row41.iloc[0, 1]).strip()))
+        check("row 41 intact, urban=88.6 (Docling)", ok,
+              f"got {row41.iloc[0].tolist() if not row41.empty else 'missing'}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
-    for g in (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi):
+    # Remember if caller wanted Docling, then force-unset so base guards run on Camelot
+    _docling_requested = os.environ.pop("DOCLING_ENABLED", "").lower() in ("1", "true", "yes")
+    base_guards = (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi)
+    # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
+    extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
+    for g in base_guards + extra_guards:
         try:
             g()
         except Exception as e:

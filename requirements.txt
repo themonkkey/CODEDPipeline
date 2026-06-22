@@ -7,3 +7,5 @@ openpyxl>=3.1
 pdfplumber>=0.10.0
 pypdfium2>=4.30.0
 pypdf>=4.0.0
+# ML extraction (local only — set DOCLING_ENABLED=1; too heavy for Streamlit Cloud free tier)
+# docling>=2.0.0

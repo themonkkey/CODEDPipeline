@@ -333,7 +333,14 @@ def _try_nfhs_headers(df, header_rows):
     return data_df
 
 
+_ALREADY_NAMED = re.compile(r"^(indicator|nfhs\d_)")
+
+
 def apply_headers(df, header_rows):
+
+    # Docling pre-names columns (nfhs6_urban, indicator, …) — skip header detection
+    if sum(1 for c in list(df.columns)[:2] if _ALREADY_NAMED.match(str(c))) >= 1:
+        return df
 
     # Gap C fix: never consume all rows — leave at least 1 data row
     if len(df) > 0:

@@ -297,6 +297,10 @@ def _read_resilient(pdf_path, page_list, flavor):
 
 
 def extract_tables(pdf_path):
+    import os
+    if os.getenv("DOCLING_ENABLED", "").lower() in ("1", "true", "yes"):
+        from backend.app.extract.docling_extractor import extract_tables_docling
+        return extract_tables_docling(pdf_path)
 
     plumber_pdf = None
 

@@ -296,8 +296,33 @@ def _read_resilient(pdf_path, page_list, flavor):
     return tables
 
 
+class InvalidPDFError(ValueError):
+    """Raised when the input file is not a valid PDF."""
+
+
+def _check_pdf_magic(pdf_path):
+    """Raise InvalidPDFError if the file does not start with the PDF magic bytes."""
+    try:
+        with open(pdf_path, "rb") as f:
+            header = f.read(1024)
+    except OSError as e:
+        raise InvalidPDFError(f"Cannot read file: {pdf_path} — {e}") from e
+
+    if not header.startswith(b"%PDF-"):
+        # Detect common mis-downloads
+        if header[:15].lower().startswith(b"<!doctype html") or b"<html" in header[:200].lower():
+            raise InvalidPDFError(
+                f"invalid_source:bot_redirect — file is an HTML page, not a PDF: {pdf_path}"
+            )
+        raise InvalidPDFError(
+            f"invalid_source — file does not begin with %PDF-: {pdf_path}"
+        )
+
+
 def extract_tables(pdf_path):
     import os
+    _check_pdf_magic(pdf_path)
+
     if os.getenv("DOCLING_ENABLED", "").lower() in ("1", "true", "yes"):
         from backend.app.extract.docling_extractor import extract_tables_docling
         return extract_tables_docling(pdf_path)

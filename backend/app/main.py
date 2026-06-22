@@ -37,7 +37,7 @@ def run_pipeline(job_id: str, pdf_path: str):
     from backend.app.cleaning.universal_cleaner import clean_dataframe
     from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
     from backend.app.cleaning.panel_splitter import split_panels
-    from backend.app.extract.table_extractor import extract_tables
+    from backend.app.extract.table_extractor import extract_tables, InvalidPDFError
     from backend.app.standardization.metadata_builder import build_metadata
     from backend.app.translation.hindi_translator import translate_dataframe, translate_text
     from backend.app.standardization.table_name_extractor import extract_table_name
@@ -52,6 +52,10 @@ def run_pipeline(job_id: str, pdf_path: str):
 
     try:
         tables = extract_tables(pdf_path)
+    except InvalidPDFError as e:
+        JOBS[job_id]["status"] = "invalid_source"
+        JOBS[job_id]["error"] = str(e)
+        return
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)

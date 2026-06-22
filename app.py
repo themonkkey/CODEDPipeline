@@ -885,9 +885,18 @@ try:
             time.sleep(6)
             st.rerun()
 
+        from pypdf import PdfReader as _PdfReader
+        _n_pages = len(_PdfReader(pdf_path).pages)
+        # ~1.2 s/page empirical (camelot lattice+stream + cleaning)
+        _est_str = _fmt_eta(int(_n_pages * 1.2))
+
         status_ph.markdown(
-            status_html("reading the document",
-                        f"{_nice_name(uploaded.name)} · locating every table"),
+            status_html(
+                "reading the document",
+                f"{_nice_name(uploaded.name)} &nbsp;·&nbsp; "
+                f"{_n_pages} page{'s' if _n_pages != 1 else ''} &nbsp;·&nbsp; "
+                f"~{_est_str} estimated",
+            ),
             unsafe_allow_html=True,
         )
 
@@ -902,6 +911,7 @@ try:
         from backend.app.cleaning.header_detector import detect_header_rows
         from backend.app.cleaning.header_postprocessor import clean_headers
         from backend.app.cleaning.universal_cleaner import clean_dataframe
+        from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
         from backend.app.export.excel_exporter import build_workbook
         from backend.app.standardization.metadata_builder import build_metadata
         from backend.app.standardization.table_name_extractor import extract_table_name
@@ -965,6 +975,7 @@ try:
                 with redirect_stdout(io.StringIO()):
                     df = clean_dataframe(t["dataframe"])
                     t["dataframe"] = None
+                    df = reassemble_wrapped_rows(df)
                     df = translate_dataframe(df)
                     h = detect_header_rows(df)
                     nm = extract_table_name(

@@ -21,6 +21,7 @@ from backend.app.cleaning.header_builder import apply_headers
 from backend.app.cleaning.header_detector import detect_header_rows
 from backend.app.cleaning.header_postprocessor import clean_headers
 from backend.app.cleaning.universal_cleaner import clean_dataframe
+from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
 from backend.app.extract.table_extractor import extract_tables
 from backend.app.standardization.table_name_extractor import extract_table_name
 from backend.app.standardization.table_stitcher import stitch_tables
@@ -47,6 +48,7 @@ def _pipeline(pdf_path):
     items = []
     for t in extract_tables(pdf_path):
         df = clean_dataframe(t["dataframe"])
+        df = reassemble_wrapped_rows(df)
         df = translate_dataframe(df)
         h = detect_header_rows(df)
         cap = t.get("caption")
@@ -132,10 +134,77 @@ def guard_plfs():
         check("rows incl 'Persons aged 15 years'", "15 years" in body, body[:120])
 
 
+def guard_nfhs():
+    print("Guard D — NFHS-6 India pp26-28")
+    nfhs = os.path.join(ROOT, "Testpdfs/NFHS-6_FactSheets.pdf")
+    path = _slice(nfhs, 26, 28)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    check("3 India tables pass", len(items) == 3, f"got {len(items)}")
+    named = [i for i in items if i["name"] == "India Key Indicators"]
+    check("named 'India Key Indicators'", len(named) == 3,
+          f"names: {[i['name'] for i in items]}")
+    want = ["indicator", "nfhs6_urban", "nfhs6_rural", "nfhs6_total", "nfhs5_total"]
+    good_cols = [i for i in items if list(i["df"].columns) == want]
+    check("NFHS group columns on all 3", len(good_cols) == 3,
+          f"first cols: {list(items[0]['df'].columns) if items else []}")
+    # wrapped indicator #41: label + 4 values must sit on ONE reassembled row
+    if items:
+        body = items[1]["df"] if len(items) > 1 else items[0]["df"]
+        row41 = body[body.iloc[:, 0].astype(str).str.startswith("41.")]
+        ok = (not row41.empty
+              and re.match(r"^88\.6$", str(row41.iloc[0, 1]).strip()))
+        check("wrapped #41 reassembled (label+88.6)", ok,
+              f"got {row41.iloc[0].tolist() if not row41.empty else 'missing'}")
+    # reassembly should leave essentially no orphan number-rows in the slice
+    NUM = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+    orphans = 0
+    for i in items:
+        for r in i["df"].astype(str).values.tolist():
+            if not r[0].strip() and sum(1 for v in r[1:] if NUM.match(v.strip())) >= 2:
+                orphans += 1
+    check("<=2 orphan number-rows in slice", orphans <= 2, f"got {orphans}")
+
+
+def guard_nfhs5():
+    """Guard E — NFHS-5 India national: NFHS column schema + merged-header detection (Gap A)."""
+    print("Guard E — NFHS-5 India national (Gap A)")
+    nfhs5 = os.path.join(ROOT, "Testpdfs/new/nfhs5_india.pdf")
+    items = [i for i in _pipeline(nfhs5) if i["passed"]]
+    check(">=5 tables pass", len(items) >= 5, f"got {len(items)}")
+    nfhs_schema = [
+        i for i in items
+        if any(re.match(r"nfhs\d_(urban|rural|total|urban_rural)", c)
+               for c in list(i["df"].columns))
+    ]
+    check(">=4 tables with nfhs_* column schema", len(nfhs_schema) >= 4,
+          f"got {len(nfhs_schema)}/{len(items)}")
+    # No value column (col 1+) should be a raw col_N fallback
+    bad = [
+        i for i in nfhs_schema
+        if sum(1 for c in list(i["df"].columns)[1:] if re.fullmatch(r"col_\d+", c)) > 1
+    ]
+    check("0 NFHS tables with >1 col_N value column", not bad,
+          f"{len(bad)} tables fell to generic builder")
+
+
+def guard_fr375_kpi():
+    """Guard F — FR375 pp118-123: no too_few_rows after Gap C header_rows cap."""
+    print("Guard F — FR375 pp118-123 KPI strip (Gap C)")
+    fr = os.path.join(ROOT, "Testpdfs/new/nfhs5_full_FR375.pdf")
+    path = _slice(fr, 118, 123)
+    all_items = _pipeline(path)
+    os.unlink(path)
+    reasons = [i["reason"] for i in all_items]
+    too_few = reasons.count("too_few_rows")
+    check("0 too_few_rows in FR375 pp118-123", too_few == 0,
+          f"got {too_few} — reasons: {reasons}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
-    for g in (guard_des, guard_darpg, guard_plfs):
+    for g in (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi):
         try:
             g()
         except Exception as e:

@@ -49,6 +49,12 @@ def clean_column_name(col):
 
     col_str = str(col).lower()
 
+    # already-clean NFHS group headers (built by _try_nfhs_headers) —
+    # keep verbatim; the generic word filter would drop the vowel-less
+    # "nfhs" token and lose the survey-round grouping.
+    if re.fullmatch(r"(indicator|nfhs\d(_(urban|rural|total))?(_\d+)?)", col_str):
+        return col_str
+
     # serial-number column ("S. No.", "Sl No", bare "no")
     if re.fullmatch(r"s?l?[._\s]*no[._\s]*", col_str):
         return "s_no"

@@ -186,7 +186,102 @@ def clean_header(text):
     return "_".join(tokens)
 
 
+_NFHS_GROUP = re.compile(r"nfhs[\s\-–]*([0-9])", re.IGNORECASE)
+_NFHS_SUBLABELS = ("urban", "rural", "total")
+
+
+def _try_nfhs_headers(df, header_rows):
+    """
+    NFHS factsheet tables carry a fixed two-level header that the generic
+    builder mangles (the section title in the last header row leaks into
+    col0's name, and the vowel-less "nfhs" group label is later dropped):
+
+        row: ['',          '',      'NFHS-6', '',      'NFHS-5']
+        row: ['Indicators','',      '(2023-24)','',    '(2019-21)']
+        row: ['<section>', 'Urban', 'Rural',  'Total', 'Total']
+
+    Produce deterministic names — indicator | nfhs6_urban | nfhs6_rural |
+    nfhs6_total | nfhs5_total — by reading the group row and the
+    Urban/Rural/Total sub-row directly.
+
+    Returns the headered DataFrame, or None when the table is not an NFHS
+    factsheet (so the generic path runs untouched for every other source).
+    """
+
+    header_df = df.iloc[:header_rows]
+
+    group_row_idx = None
+    sub_row_idx = None
+
+    for i in range(len(header_df)):
+        cells = [str(v).strip().lower() for v in header_df.iloc[i].tolist()]
+        if group_row_idx is None and any(_NFHS_GROUP.search(c) for c in cells):
+            group_row_idx = i
+        # Gap A: accept both separate "urban"/"rural" cells and a merged "urban rural" cell
+        if "urban" in cells and "rural" in cells:
+            sub_row_idx = i
+        elif sub_row_idx is None and any("urban" in c and "rural" in c for c in cells):
+            sub_row_idx = i
+
+    if group_row_idx is None or sub_row_idx is None:
+        return None
+
+    # per-column group: scan the group row, forward-fill, then backfill the
+    # leading value columns to the first group seen (NFHS-6 sits visually
+    # over Urban/Rural/Total but is anchored a column to the right).
+    group_cells = [str(v).strip() for v in header_df.iloc[group_row_idx].tolist()]
+    groups = []
+    current = None
+    for c in group_cells:
+        m = _NFHS_GROUP.search(c)
+        if m:
+            current = f"nfhs{m.group(1)}"
+        groups.append(current)
+    first = next((g for g in groups if g), None)
+    groups = [g or first for g in groups]
+
+    sub_cells = [str(v).strip().lower() for v in header_df.iloc[sub_row_idx].tolist()]
+
+    columns = []
+    seen = {}
+    for col in range(df.shape[1]):
+        if col == 0:
+            name = "indicator"
+        else:
+            sub_c = sub_cells[col] if col < len(sub_cells) else ""
+            grp = groups[col] if col < len(groups) else None
+            # Gap A fix: handle camelot-merged "Urban Rural" in one cell
+            if "urban" in sub_c and "rural" in sub_c:
+                sub = "urban_rural"
+            else:
+                sub = next((s for s in _NFHS_SUBLABELS if s in sub_c), None)
+            if sub and grp:
+                name = f"{grp}_{sub}"
+            elif sub:
+                name = sub
+            else:
+                name = f"col_{col}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}_{seen[name]}"
+        else:
+            seen[name] = 0
+        columns.append(name)
+
+    data_df = df.iloc[header_rows:].reset_index(drop=True)
+    data_df.columns = columns
+    return data_df
+
+
 def apply_headers(df, header_rows):
+
+    # Gap C fix: never consume all rows — leave at least 1 data row
+    if len(df) > 0:
+        header_rows = min(header_rows, len(df) - 1)
+
+    nfhs = _try_nfhs_headers(df, header_rows)
+    if nfhs is not None:
+        return nfhs
 
     #
     # Find actual start of data

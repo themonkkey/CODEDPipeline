@@ -16,6 +16,7 @@ from backend.app.cleaning.header_builder import apply_headers
 from backend.app.cleaning.header_detector import detect_header_rows
 from backend.app.cleaning.header_postprocessor import clean_headers
 from backend.app.cleaning.universal_cleaner import clean_dataframe
+from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
 from backend.app.extract.table_extractor import extract_tables
 from backend.app.standardization.table_name_extractor import extract_table_name
 from backend.app.standardization.table_stitcher import stitch_tables
@@ -23,6 +24,22 @@ from backend.app.translation.hindi_translator import translate_dataframe, transl
 from backend.app.validation.table_validator import validate_table
 
 DEVA = re.compile(r"[ऀ-ॿ]")
+_ORPHAN_NUM = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+
+
+def _orphan_rows(df):
+    """Rows with an empty first cell where ≥80% of populated value cells are
+    numeric — the label-less wrap artifacts reassembly is meant to eliminate.
+    The 80% frac prevents counting legitimate indented sub-rows in wide tables
+    where some cells carry text or blanks (Gap B fix)."""
+    n = 0
+    for row in df.astype(str).values.tolist():
+        if not row[0].strip():
+            populated = [v.strip() for v in row[1:] if v.strip() and v.strip() not in ("nan", "None")]
+            num = sum(1 for v in populated if _ORPHAN_NUM.match(v))
+            if populated and num >= 2 and num / len(populated) >= 0.8:
+                n += 1
+    return n
 
 
 def run(pdf_path, outdir, chunk=50):
@@ -55,6 +72,7 @@ def run(pdf_path, outdir, chunk=50):
             real_page = start + t["page"]
             try:
                 df = clean_dataframe(t["dataframe"])
+                df = reassemble_wrapped_rows(df)
                 df = translate_dataframe(df)
                 h = detect_header_rows(df)
                 cap = t.get("caption")
@@ -97,6 +115,7 @@ def run(pdf_path, outdir, chunk=50):
             "table_id": it["table_id"], "name": it["name"], "titled": it["titled"],
             "pages": it.get("pages", [it["page"]]), "rows": len(df), "cols": len(cols),
             "col_n_frac": round(coln / len(cols), 2) if cols else 1.0,
+            "orphan_rows": _orphan_rows(df),
             "deva_cells": deva_cells, "deva_cols": deva_cols,
             "flavor": it["flavor"], "columns": cols, "csv": csv_name,
         })
@@ -106,6 +125,7 @@ def run(pdf_path, outdir, chunk=50):
         "pdf": os.path.basename(pdf_path), "pages": n_pages, "found": found,
         "passed_pre_stitch": len(passed_items), "after_stitch": len(stitched),
         "stitch_merges": len(passed_items) - len(stitched),
+        "orphan_rows_total": sum(m["orphan_rows"] for m in meta),
         "failed": failed, "tables": meta,
     }
     with open(os.path.join(outdir, "metadata.json"), "w") as f:

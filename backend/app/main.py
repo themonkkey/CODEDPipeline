@@ -35,6 +35,7 @@ def run_pipeline(job_id: str, pdf_path: str):
     from backend.app.cleaning.header_detector import detect_header_rows
     from backend.app.cleaning.header_postprocessor import clean_headers
     from backend.app.cleaning.universal_cleaner import clean_dataframe
+    from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
     from backend.app.extract.table_extractor import extract_tables
     from backend.app.standardization.metadata_builder import build_metadata
     from backend.app.translation.hindi_translator import translate_dataframe, translate_text
@@ -61,6 +62,7 @@ def run_pipeline(job_id: str, pdf_path: str):
     for table in tables:
         try:
             df = clean_dataframe(table["dataframe"])
+            df = reassemble_wrapped_rows(df)
             df = translate_dataframe(df)
             h = detect_header_rows(df)
             table_name = extract_table_name(

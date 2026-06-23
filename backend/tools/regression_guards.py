@@ -239,12 +239,108 @@ def guard_nfhs_docling():
               f"got {row41.iloc[0].tolist() if not row41.empty else 'missing'}")
 
 
+def guard_rbi_payment_system():
+    """Guard H — RBI Table 61 Payment System pp121-122: year-group ffill + vocab expansion.
+
+    Table 61 has a single meaningful header row containing year groups
+    ("2020-21 | | 2021-22 | |") with Volume/Value sub-labels in the first
+    data row.  After the col_N fixes:
+      - cols[1+] must have 0 col_N phantoms
+      - at least 4 year-named columns (20XX_XX pattern)
+      - sub-label absorption: "volume_2020_21" / "value_2020_21" etc.
+    """
+    print("Guard H — RBI Table 61 Payment System pp121-122 (col_N / year-ffill)")
+    rbi = os.path.join(ROOT, "Testpdfs/new_batch/rbi_annual_report_2024-25.pdf")
+    path = _slice(rbi, 121, 122)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    from backend.app.standardization.table_stitcher import stitch_tables
+    stitched = stitch_tables([{"table_id": i["table_id"], "name": i["name"] or "",
+                               "page": i["page"], "df": i["df"], "pages": [i["page"]]}
+                              for i in items])
+    t61 = [s for s in stitched if s["name"] and "61" in str(s["name"])
+           and "PAYMENT" in str(s["name"]).upper()]
+    check("Table 61 found", bool(t61), f"names: {[s['name'] for s in stitched]}")
+    if t61:
+        df = t61[0]["df"]
+        cols = list(df.columns)
+        phantom_val_cols = [c for c in cols[1:] if re.fullmatch(r"col(_\d+)?", str(c))]
+        year_cols = [c for c in cols if re.search(r"20\d\d_\d\d", str(c))]
+        check("0 col_N in cols[1+]", not phantom_val_cols,
+              f"phantom: {phantom_val_cols}")
+        check(">=4 year-named columns", len(year_cols) >= 4,
+              f"got {year_cols}")
+        check(">=20 data rows", len(df) >= 20, f"got {len(df)}")
+
+
+def guard_rbi_money_stock():
+    """Guard I — RBI Table 39 Money Stock pp93-94: financial vocabulary expansion.
+
+    Table 39 has 6 header rows with all-short financial terms
+    ("Currency", "Cash", "Deposits"…) that previously ALL fell to col_N
+    because they were classified as prose-title fragments.  After the
+    _SUBDIVISION_VOCAB expansion, the pipeline must recover meaningful names.
+    """
+    print("Guard I — RBI Table 39 Money Stock pp93-94 (financial vocab)")
+    rbi = os.path.join(ROOT, "Testpdfs/new_batch/rbi_annual_report_2024-25.pdf")
+    path = _slice(rbi, 93, 94)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    t39 = [i for i in items if i["name"] and "39" in str(i["name"])]
+    check("Table 39 found", bool(t39), f"names: {[i['name'] for i in items]}")
+    if t39:
+        df = t39[0]["df"]
+        cols = list(df.columns)
+        phantom_val_cols = [c for c in cols[1:] if re.fullmatch(r"col(_\d+)?", str(c))]
+        # At least one column must contain a financial term
+        financial = re.compile(
+            r"currency|cash|deposit|reserve|broad|narrow|money|bank", re.IGNORECASE
+        )
+        fin_cols = [c for c in cols if financial.search(str(c))]
+        check("0 col_N in cols[1+]", not phantom_val_cols,
+              f"phantom: {phantom_val_cols}")
+        check(">=3 financial-term columns", len(fin_cols) >= 3,
+              f"got {fin_cols}")
+        check(">=40 data rows", len(df) >= 40, f"got {len(df)}")
+
+
+def guard_rbi_multipage_stitch():
+    """Guard J — RBI Table 5 NET STATE DOMESTIC PRODUCT pp27-30: stitch fix.
+
+    Table 5 spans 3+ pages.  Before the stitch fix (page-gap > 2, same-page
+    continuations), Camelot fragments were never merged; after the fix the
+    pages must be consolidated into a single stitched table.
+    """
+    print("Guard J — RBI Table 5 NET STATE pp27-30 (multi-page stitch)")
+    rbi = os.path.join(ROOT, "Testpdfs/new_batch/rbi_annual_report_2024-25.pdf")
+    path = _slice(rbi, 27, 30)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    from backend.app.standardization.table_stitcher import stitch_tables
+    stitched = stitch_tables([{"table_id": i["table_id"], "name": i["name"] or "",
+                               "page": i["page"], "df": i["df"], "pages": [i["page"]]}
+                              for i in items])
+    t5 = [s for s in stitched if s["name"] and "Table 5" in str(s["name"])]
+    check("Table 5 found", bool(t5), f"names: {[s['name'] for s in stitched]}")
+    if t5:
+        # All 3 pages should be merged into one
+        all_pages = t5[0].get("pages", [t5[0]["page"]])
+        check(">=3 pages stitched into 1 table", len(all_pages) >= 3,
+              f"got pages={all_pages}, groups={len(t5)}")
+        check(">=80 rows after stitch", len(t5[0]["df"]) >= 80,
+              f"got {len(t5[0]['df'])}")
+        # Must have >=10 state columns
+        check(">=10 columns (state-wise)", t5[0]["df"].shape[1] >= 10,
+              f"got {t5[0]['df'].shape[1]}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
     # Remember if caller wanted Docling, then force-unset so base guards run on Camelot
     _docling_requested = os.environ.pop("DOCLING_ENABLED", "").lower() in ("1", "true", "yes")
-    base_guards = (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi)
+    base_guards = (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi,
+                   guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

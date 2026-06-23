@@ -655,6 +655,77 @@ def guard_section_lift():
           list(lift_section_rows(normal).columns) == ["state", "rural", "urban"])
 
 
+def guard_multilevel_header_merge():
+    """Guard V — leaked multi-level sub-header rows fold into composite column
+    names; real data rows and non-numeric tables are never touched.
+
+    HCES Table 2 prints a year group row over a metric row ('Average MPCE' |
+    'Urban-Rural differences') over a Rural/Urban row. The detector keeps only the
+    year row, stranding the metric + sub rows as data and leaving duplicate
+    '2022_23' columns. _absorb_subheader_rows must merge them into
+    2022_23_average_mpce_rural / _urban / _urban_rural_differences while keeping
+    the data and refusing to swallow a genuine data row.
+    """
+    print("Guard V — multi-level header merge (_absorb_subheader_rows)")
+    import pandas as pd
+    from backend.app.cleaning.header_builder import _absorb_subheader_rows, apply_headers
+
+    # (1) two stranded sub-header rows over numeric data -> composite names
+    d = pd.DataFrame([
+        ["", "Average MPCE", "", "Urban-Rural differences", "Average MPCE", "", "Urban-Rural differences"],
+        ["", "Rural", "Urban", "", "Rural", "Urban", ""],
+        ["Andhra Pradesh", "4870", "6782", "39", "5327", "7182", "35"],
+        ["Bihar", "3384", "4768", "41", "3670", "5080", "38"],
+        ["Goa", "7666", "9509", "24", "8392", "10268", "22"],
+    ], columns=["major_state", "2022_23", "2022_23", "2022_23", "2023_24", "2023_24", "2023_24"])
+    out = _absorb_subheader_rows(d)
+    cols = [str(c) for c in out.columns]
+    phantom = [c for c in cols[1:] if re.fullmatch(r"col(_\d+)?", c)]
+    check("0 col_N in value columns", not phantom, f"got {cols}")
+    check("no duplicate column names", len(set(cols)) == len(cols), f"got {cols}")
+    check("year+metric+sub composites built",
+          "2022_23_average_mpce_rural" in cols and "2023_24_average_mpce_urban" in cols,
+          f"got {cols}")
+    check(">=4 composite (year+sub) columns",
+          sum(1 for c in cols if re.search(r"20\d\d_\d\d", c) and
+              ("rural" in c or "urban" in c or "differences" in c)) >= 4, f"got {cols}")
+    check("data rows kept intact (3 rows, AP=4870)",
+          len(out) == 3 and str(out.iloc[0, 1]).strip() == "4870",
+          f"shape={out.shape} row0={out.iloc[0].tolist()}")
+
+    # (2) first data row is real data (has numbers) -> no absorb
+    realdata = pd.DataFrame([
+        ["Andhra Pradesh", "4870", "6782"],
+        ["Bihar", "3384", "4768"],
+    ], columns=["state", "2022_23", "2023_24"])
+    check("real data first row -> unchanged",
+          list(_absorb_subheader_rows(realdata).columns) == ["state", "2022_23", "2023_24"]
+          and len(_absorb_subheader_rows(realdata)) == 2)
+
+    # (3) numeric-below gate: sub-header-looking row but text data below -> no absorb
+    texttable = pd.DataFrame([
+        ["", "Rural", "Urban", "Total"],
+        ["x", "high", "low", "mid"],
+        ["y", "low", "high", "mid"],
+    ], columns=["c0", "c1", "c2", "c3"])
+    before = list(texttable.columns)
+    check("non-numeric data below -> no absorb",
+          list(_absorb_subheader_rows(texttable).columns) == before
+          and len(_absorb_subheader_rows(texttable)) == 3)
+
+    # (4) single stranded volume/value sub-row (RBI-style) still merges (k=1)
+    one = pd.DataFrame([
+        ["", "Volume", "Value", "Volume", "Value"],
+        ["RTGS", "10", "20", "30", "40"],
+        ["NEFT", "11", "21", "31", "41"],
+    ], columns=["col", "2020_21", "2020_21", "2021_22", "2021_22"])
+    o1 = _absorb_subheader_rows(one)
+    c1 = [str(c) for c in o1.columns]
+    check("single sub-row merged into year_label composites",
+          any("volume" in c and "2020_21" in c for c in c1)
+          and any("value" in c and "2021_22" in c for c in c1), f"got {c1}")
+
+
 def guard_workbook_toc():
     """Guard U — navigable workbook: Contents tab first, readable sheet codes,
     full untruncated titles, ghost frames excluded.
@@ -812,8 +883,9 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_section_lift, guard_workbook_toc,
-                   guard_numeric_normalization, guard_ghost_suppression)
+                   guard_section_lift, guard_multilevel_header_merge,
+                   guard_workbook_toc, guard_numeric_normalization,
+                   guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

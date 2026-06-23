@@ -234,6 +234,95 @@ _INDEX_CELL = re.compile(r"^\(?[0-9]{1,2}\.?\)?$")
 _NFHS_GROUP = re.compile(r"nfhs[\s\-–]*([0-9])", re.IGNORECASE)
 _NFHS_SUBLABELS = ("urban", "rural", "total")
 
+# a single clean data value ("4,870", "(7.5)", "39", "12.3%")
+_NUM_VALUE = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+_COL_N_QUICK = re.compile(r"^col(_\d+)?$")
+
+
+def _is_subheader_row(cells, ncols):
+    """True when a row is a leaked multi-level sub-header — statistical labels,
+    no data values — rather than a real data row.
+
+    A header detector that stops one row early leaves rows like
+    ['', 'Average MPCE (Rs.)', '', 'Urban-Rural differences', …] or
+    ['', 'Rural', 'Urban', '', 'Rural', 'Urban', ''] sitting on top of the data.
+    They carry subdivision vocabulary, compact labels, and NO numeric value."""
+    ne = [c for c in cells if c and c not in ("nan", "None")]
+    if len(ne) < max(3, ncols // 2):
+        return False
+    if any(_NUM_VALUE.match(c) for c in ne):
+        return False                       # a real value -> this is data
+    if not all(re.search(r"[A-Za-z]", c) for c in ne):
+        return False                       # every label must have letters
+    if any(len(c.split()) > 6 for c in ne):
+        return False                       # too prose-y to be a header
+    return bool(_SUBDIVISION_VOCAB.search(" ".join(ne)))
+
+
+def _numeric_fraction(df_slice):
+    """Fraction of populated cells in df_slice that are clean numeric values."""
+    pop = [
+        str(v).strip()
+        for row in df_slice.values.tolist()
+        for v in row
+        if str(v).strip() and str(v).strip() not in ("nan", "None")
+    ]
+    if not pop:
+        return 0.0
+    return sum(1 for v in pop if _NUM_VALUE.match(v)) / len(pop)
+
+
+def _absorb_subheader_rows(data_df, max_rows=3):
+    """Fold leaked multi-level sub-header rows into composite column names.
+
+    Walks the leading data rows while each looks like a sub-header AND the rows
+    beneath it are predominantly numeric (the decisive header-vs-data signal).
+    Spanning labels on every absorbed row except the last are forward-filled, so
+    ['2022_23','2022_23',…] + ['Average MPCE','','Urban-Rural diff',…] +
+    ['Rural','Urban',…] become 2022_23_average_mpce_rural / _urban /
+    _urban_rural_differences — not duplicate year columns with the labels stranded
+    as data. Conservative: returns data_df unchanged when nothing qualifies."""
+    cols = [str(c) for c in data_df.columns]
+    ncols = len(cols)
+
+    k = 0
+    while k < min(max_rows, len(data_df) - 1):
+        row = [str(v).strip() for v in data_df.iloc[k].tolist()]
+        if not _is_subheader_row(row, ncols):
+            break
+        if _numeric_fraction(data_df.iloc[k + 1:]) < 0.4:
+            break
+        k += 1
+
+    if k == 0:
+        return data_df
+
+    sub = data_df.iloc[:k].copy()
+    for r in range(k - 1):                  # ffill spanning rows; last is per-column
+        sub.iloc[r] = sub.iloc[r].replace("", None).ffill().fillna("")
+
+    new_cols, seen = [], {}
+    for ci in range(ncols):
+        parts = []
+        if not _COL_N_QUICK.fullmatch(cols[ci]):
+            parts.append(cols[ci])
+        for r in range(k):
+            v = str(sub.iloc[r, ci]).strip()
+            if v and v not in ("nan", "None"):
+                parts.append(v)
+        name = clean_header("_".join(parts)) if parts else f"col_{ci}"
+        name = name or f"col_{ci}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}_{seen[name]}"
+        else:
+            seen[name] = 0
+        new_cols.append(name)
+
+    out = data_df.iloc[k:].reset_index(drop=True)
+    out.columns = new_cols
+    return out
+
 
 def _try_nfhs_headers(df, header_rows):
     """
@@ -632,35 +721,14 @@ def apply_headers(df, header_rows):
     data_df.columns = columns
 
     #
-    # Absorb missed sub-header row: detect_header_rows sometimes stops one
-    # row too early, leaving the sub-label row ("Volume | Value | Volume …",
-    # "Credit | Debit | Net …") as the first data row. If the first data row
-    # is all-text, compact (≤2 words/cell), has statistical vocabulary, and
-    # has no digit-containing cells, fold it into the column names and drop it.
+    # Absorb missed sub-header rows: detect_header_rows sometimes stops one or
+    # more rows too early, leaving sub-label rows ("Volume | Value | Volume …")
+    # AND a metric row ("Average MPCE | | Urban-Rural differences | …") stranded
+    # as the first data rows. Fold each into composite column names when it sits
+    # above numeric data (see _absorb_subheader_rows).
     #
-    _COL_N_QUICK = re.compile(r"^col(_\d+)?$")
     if len(data_df) > 1:
-        first = [str(v).strip() for v in data_df.iloc[0].tolist()]
-        non_empty_sub = [v for v in first if v and v not in ("nan", "None")]
-        if (
-            len(non_empty_sub) >= max(3, len(first) // 2)
-            and all(len(v.split()) <= 2 for v in non_empty_sub)
-            and not any(re.search(r"\d", v) for v in non_empty_sub)
-            and bool(_SUBDIVISION_VOCAB.search(" ".join(non_empty_sub)))
-        ):
-            new_cols = []
-            for col_idx, (col_name, sub_val) in enumerate(zip(data_df.columns, first)):
-                sv = sub_val.strip()
-                if sv and sv not in ("nan", "None"):
-                    sc = clean_header(sv)
-                    if _COL_N_QUICK.fullmatch(str(col_name)):
-                        new_cols.append(sc)
-                    else:
-                        new_cols.append(f"{col_name}_{sc}")
-                else:
-                    new_cols.append(str(col_name))
-            data_df.columns = new_cols
-            data_df = data_df.iloc[1:].reset_index(drop=True)
+        data_df = _absorb_subheader_rows(data_df)
 
     #
     # Drop ghost columns: camelot sometimes emits columns whose data

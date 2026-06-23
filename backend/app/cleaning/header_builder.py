@@ -543,14 +543,26 @@ def apply_headers(df, header_rows):
     # Drop ghost columns: camelot sometimes emits columns whose data
     # cells are all empty (split header cells create them). They only
     # add clutter and duplicate header names.
+    # Also drop col_N-named separator columns that are <20% populated —
+    # spanning header cells in Econ Survey / Agriculture tables create
+    # blank separator columns that happen to carry a stray value or two.
     #
+
+    _COL_N = re.compile(r"^col(_\d+)?$")
 
     if data_df.shape[1] > 2:
 
-        keep = [
-            c for c in range(data_df.shape[1])
-            if not data_df.iloc[:, c].astype(str).str.strip().eq("").all()
-        ]
+        keep = []
+        for c in range(data_df.shape[1]):
+            col_data = data_df.iloc[:, c].astype(str).str.strip()
+            if col_data.eq("").all():
+                continue
+            col_name = str(data_df.columns[c])
+            if _COL_N.fullmatch(col_name):
+                populated = (~col_data.isin(["", "nan", "None"])).sum()
+                if populated / max(len(col_data), 1) < 0.2:
+                    continue
+            keep.append(c)
 
         if len(keep) >= 2 and len(keep) < data_df.shape[1]:
             data_df = data_df.iloc[:, keep]

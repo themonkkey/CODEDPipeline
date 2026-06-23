@@ -454,6 +454,24 @@ def apply_headers(df, header_rows):
     # (d) original _TITLE_FRAGMENT pattern (Table X.Y lone cell)
     title_rows = set()
 
+    # Per-column numeric fraction of the DATA region — a real column header sits
+    # above mostly-numeric data; a spread title does not. Used to rescue
+    # multi-level sub-header rows (e.g. "Crude Oil | POL Products | Crude Oil |
+    # POL Products") from the prose-title heuristic below.
+    _NUM_CELL = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+    col_numeric_frac = []
+    for c in range(df.shape[1]):
+        col = data_df.iloc[:, c].astype(str).str.strip() if data_df.shape[1] > c else None
+        if col is None or len(col) == 0:
+            col_numeric_frac.append(0.0)
+            continue
+        populated = col[~col.isin(["", "nan", "None"])]
+        if len(populated) == 0:
+            col_numeric_frac.append(0.0)
+            continue
+        num = sum(1 for v in populated if _NUM_CELL.match(v))
+        col_numeric_frac.append(num / len(populated))
+
     for i in range(len(header_df)):
 
         cells = [str(v).strip() for v in df.iloc[i].tolist()]
@@ -497,9 +515,16 @@ def apply_headers(df, header_rows):
         # grid). Require an unfilled tail so fully-labelled commodity/MSP
         # header rows (Year | Paddy | Maize | Wheat | …) survive.
         not_full = len(non_empty) < len(cells)
+        # Final guard: a row whose populated cells sit ABOVE numeric data columns
+        # is a real (sub-)header, never a title — keep it. "Crude Oil | POL
+        # Products | Crude Oil | POL Products" sits over the production/import
+        # value columns and must survive.
+        over_numeric = sum(1 for j in positions if col_numeric_frac[j] >= 0.5)
+        sits_over_data = over_numeric >= max(2, len(positions) * 0.5)
         if (
             all_short and not has_subdiv and not has_year
             and len(non_empty) >= 3 and contiguous and not_full
+            and not sits_over_data
         ):
             title_rows.add(i)
 

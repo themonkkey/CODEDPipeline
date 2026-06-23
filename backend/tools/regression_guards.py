@@ -463,6 +463,54 @@ def guard_numeric_below_unit():
           f"got {cols}")
 
 
+def guard_header_recovery_gate():
+    """Guard P — _header_is_missing gate fires on sparse title-blocks, not on
+    well-formed captured headers.
+
+    The relaxed gate lets stream header-recovery run when the rows above the
+    first data row are sparse title/section lines (NCRB "Chapter-2D | Kidnapping
+    & Abduction (Metropolitan…)" with blank siblings) — but must REFUSE when
+    camelot already captured a real short multi-column header, so recovery never
+    prepends a second header onto a good table.
+    """
+    print("Guard P — stream header-recovery gate (_header_is_missing)")
+    import pandas as pd
+    from backend.app.extract.table_extractor import _header_is_missing
+
+    # (1) sparse title block above data -> header IS missing (recover)
+    sparse = pd.DataFrame([
+        ["&", "", ""],
+        ["TABLE NO.", "", ""],
+        ["Chapter-2D", "Kidnapping & Abduction (Metropolitan Cities)", ""],
+        ["2D.1", "Kidnapping & Abduction (City-wise) - 2023", "197"],
+        ["2D.2", "Purpose of Kidnapping & Abduction - 2023", "198"],
+    ])
+    check("sparse title-block -> recover", _header_is_missing(sparse) is True)
+
+    # (2) well-formed short header captured -> NOT missing (don't double-prepend)
+    good = pd.DataFrame([
+        ["S.No", "District", "Total", "Rural", "Urban"],
+        ["1", "Foo", "100", "60", "40"],
+        ["2", "Bar", "200", "120", "80"],
+    ])
+    check("well-formed captured header -> skip", _header_is_missing(good) is False)
+
+    # (3) index-only band above data -> recover (original behaviour preserved)
+    index_band = pd.DataFrame([
+        ["", "(1)", "(2)", "(3)"],
+        ["1990", "10", "20", "30"],
+        ["1991", "11", "21", "31"],
+    ])
+    check("index-only band -> recover", _header_is_missing(index_band) is True)
+
+    # (4) no numeric data row at all -> not a recovery candidate
+    no_data = pd.DataFrame([
+        ["Region", "Metric", "Value"],
+        ["North", "high", "yes"],
+    ])
+    check("no data row -> skip", _header_is_missing(no_data) is False)
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -471,7 +519,8 @@ if __name__ == "__main__":
     base_guards = (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi,
                    guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch,
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
-                   guard_rbi_multilevel_header, guard_numeric_below_unit)
+                   guard_rbi_multilevel_header, guard_numeric_below_unit,
+                   guard_header_recovery_gate)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

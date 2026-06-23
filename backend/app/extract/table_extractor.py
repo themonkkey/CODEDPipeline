@@ -331,30 +331,49 @@ _HEADER_UNIT_LINE = re.compile(
 
 def _header_is_missing(df):
     """
-    True when camelot's stream flavor failed to capture the column header:
-    the rows above the first data row are empty except for an optional
-    "1 2 3 …" index band. The first data row is the first whose column 0
-    holds a year / numeric value.
+    True when camelot's stream flavor failed to capture the column header.
+
+    Two cases qualify:
+      (1) the rows above the first data row are empty / index-only ("1 2 3"), or
+      (2) they are sparse title/section lines — long prose in one cell with the
+          other columns blank (e.g. NCRB "Chapter-2D | Kidnapping & Abduction
+          (Metropolitan…)") — rather than a well-formed column-header row.
+
+    A *well-formed* header row labels at least half the columns with SHORT
+    (<=3 word) cells; when one exists camelot DID capture the header and we must
+    NOT prepend a second one. Recovery itself is conservative (it only prepends
+    when the band above buckets confidently into the columns), so a relaxed gate
+    that occasionally opens on a table with no recoverable band is a no-op, not
+    a corruption.
     """
 
-    for i in range(min(6, len(df))):
-        row = [str(v).strip() for v in df.iloc[i].tolist()]
-        col0 = row[0]
-
-        # reached the data: a year ("1962-63") or plain number in column 0
+    # locate the first data row: column 0 starts with a digit / year
+    data_i = None
+    for i in range(min(8, len(df))):
+        col0 = str(df.iloc[i, 0]).strip()
         if re.match(r"^\(?\d", col0):
-            # everything above must have been empty / index-only
-            for j in range(i):
-                prev = [str(v).strip() for v in df.iloc[j].tolist()]
-                text_cells = [
-                    c for c in prev
-                    if c and c not in ("nan", "None") and not _INDEX_ONLY.match(c)
-                ]
-                if len(text_cells) >= 2:
-                    return False
-            return True
+            data_i = i
+            break
 
-    return False
+    if data_i is None:
+        return False
+
+    ncols = df.shape[1]
+    for j in range(data_i):
+        cells = [str(v).strip() for v in df.iloc[j].tolist()]
+        labels = [
+            c for c in cells
+            if c and c not in ("nan", "None") and not _INDEX_ONLY.match(c)
+        ]
+        if not labels:
+            continue
+        # a real captured header labels most columns with short tokens; a
+        # title/section block leaves columns blank or carries long prose.
+        all_short = all(len(c.split()) <= 3 for c in labels)
+        if all_short and len(labels) >= max(2, ncols * 0.5):
+            return False
+
+    return True
 
 
 def _recover_stream_header(table, df, plumber_pdf):

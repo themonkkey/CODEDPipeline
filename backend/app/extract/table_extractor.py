@@ -319,6 +319,120 @@ def _check_pdf_magic(pdf_path):
         )
 
 
+_INDEX_ONLY = re.compile(r"^\(?\d{1,2}\)?$")
+_HEADER_TITLE_LINE = re.compile(
+    r"\b(table|tabel|statement|annexure|appendix)\b\s*\d", re.IGNORECASE
+)
+_HEADER_UNIT_LINE = re.compile(
+    r"₹|crore|per cent|\blakh\b|million|billion|base\s*[:y]|end-march|end-",
+    re.IGNORECASE,
+)
+
+
+def _header_is_missing(df):
+    """
+    True when camelot's stream flavor failed to capture the column header:
+    the rows above the first data row are empty except for an optional
+    "1 2 3 …" index band. The first data row is the first whose column 0
+    holds a year / numeric value.
+    """
+
+    for i in range(min(6, len(df))):
+        row = [str(v).strip() for v in df.iloc[i].tolist()]
+        col0 = row[0]
+
+        # reached the data: a year ("1962-63") or plain number in column 0
+        if re.match(r"^\(?\d", col0):
+            # everything above must have been empty / index-only
+            for j in range(i):
+                prev = [str(v).strip() for v in df.iloc[j].tolist()]
+                text_cells = [
+                    c for c in prev
+                    if c and c not in ("nan", "None") and not _INDEX_ONLY.match(c)
+                ]
+                if len(text_cells) >= 2:
+                    return False
+            return True
+
+    return False
+
+
+def _recover_stream_header(table, df, plumber_pdf):
+    """
+    Read the column labels that camelot's stream flavor dropped, by extracting
+    words from the band just above the table and bucketing them into camelot's
+    column x-ranges. Returns df with a recovered header row prepended, or the
+    original df when recovery is not applicable / not confident.
+
+    Gated on _header_is_missing so tables whose headers camelot DID capture are
+    never touched.
+    """
+
+    if plumber_pdf is None:
+        return df
+
+    try:
+        if not _header_is_missing(df):
+            return df
+
+        cols = getattr(table, "cols", None)
+        bbox = getattr(table, "_bbox", None)
+        if not cols or bbox is None:
+            return df
+
+        page = plumber_pdf.pages[int(table.page) - 1]
+        height = page.height
+        table_top = height - bbox[3]
+
+        band = page.crop((
+            0, max(0, table_top - 58), page.width, min(height, table_top + 16)
+        ))
+        words = band.extract_words()
+        if not words:
+            return df
+
+        # cluster words into text lines, drop the title line and lone unit lines
+        lines = {}
+        for w in words:
+            lines.setdefault(round(w["top"] / 3), []).append(w)
+
+        keep = []
+        for ws in lines.values():
+            text = " ".join(x["text"] for x in sorted(ws, key=lambda z: z["x0"]))
+            if _HEADER_TITLE_LINE.search(text):
+                continue
+            if _HEADER_UNIT_LINE.search(text) and len(ws) <= 3:
+                continue
+            keep.extend(ws)
+
+        buckets = [[] for _ in cols]
+        for w in keep:
+            xm = (w["x0"] + w["x1"]) / 2
+            for ci, (cx1, cx2) in enumerate(cols):
+                if cx1 <= xm <= cx2:
+                    buckets[ci].append((round(w["top"]), w["x0"], w["text"]))
+                    break
+
+        recovered = [
+            " ".join(t for _, _, t in sorted(b)).strip() for b in buckets
+        ]
+
+        filled = sum(1 for v in recovered if v)
+        if filled < max(3, len(recovered) * 0.5):
+            return df
+
+        if len(recovered) != df.shape[1]:
+            return df
+
+        import pandas as pd
+
+        head = pd.DataFrame([recovered], columns=df.columns)
+        return pd.concat([head, df], ignore_index=True)
+
+    except Exception:
+        return df
+
+
 def extract_tables(pdf_path):
     import os
     _check_pdf_magic(pdf_path)
@@ -396,6 +510,11 @@ def extract_tables(pdf_path):
 
                 if len(df) < 4 or len(df.columns) < 3:
                     continue
+
+                # Recover headers camelot's stream flavor dropped: when the top
+                # rows are empty (only a "1 2 3" index band survives), read the
+                # column labels positionally from pdfplumber and prepend them.
+                df = _recover_stream_header(table, df, plumber_pdf)
 
                 kept.append({
                     "page": page,

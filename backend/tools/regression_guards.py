@@ -335,13 +335,90 @@ def guard_rbi_multipage_stitch():
               f"got {t5[0]['df'].shape[1]}")
 
 
+def guard_rbi_orphan_merge():
+    """Guard K — RBI Table 45 Sectoral Deployment p103: parenthetical continuation merge.
+
+    RBI stacks a provisional figure in parentheses on the next physical line,
+    which camelot emits as a label-less value-only row. merge_continuation_values
+    folds each into the cell above ("16411581 (15878397)"), so the table must
+    have ZERO orphan number-rows and several merged cells.
+    """
+    print("Guard K — RBI Table 45 orphan continuation merge p103")
+    rbi = os.path.join(ROOT, "Testpdfs/new_batch/rbi_annual_report_2024-25.pdf")
+    path = _slice(rbi, 103, 104)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    t45 = [i for i in items if i["name"] and "45" in str(i["name"])]
+    check("Table 45 found", bool(t45), f"names: {[i['name'] for i in items]}")
+    if t45:
+        df = t45[0]["df"].fillna("").astype(str)
+        NUM = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+        orphans = sum(
+            1 for row in df.values.tolist()
+            if not row[0].strip()
+            and sum(1 for v in row[1:] if NUM.match(v.strip())) >= 2
+        )
+        merged = sum(
+            1 for r in range(len(df)) for c in range(df.shape[1])
+            if re.search(r"\d[\d,]*\s+\(\d", str(df.iloc[r, c]))
+        )
+        check("0 orphan number-rows (merged up)", orphans == 0, f"got {orphans}")
+        check(">=8 'main (provisional)' merged cells", merged >= 8, f"got {merged}")
+
+
+def guard_rbi_msp_headers():
+    """Guard L — RBI Table 24 MSP for Foodgrains p73-74: commodity column headers.
+
+    A fully-labelled commodity header row ("Year | Paddy | Maize | Wheat | Gram
+    | Arhar | Moong | Urad") was being discarded by the prose-title heuristic
+    until the contiguity + not-full guard was added. The commodity names must
+    survive as column headers.
+    """
+    print("Guard L — RBI Table 24 MSP commodity headers p73-74")
+    rbi = os.path.join(ROOT, "Testpdfs/new_batch/rbi_annual_report_2024-25.pdf")
+    path = _slice(rbi, 73, 74)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    t24 = [i for i in items if i["name"] and "24" in str(i["name"])
+           and "SUPPORT PRICE" in str(i["name"]).upper()]
+    check("Table 24 found", bool(t24), f"names: {[i['name'] for i in items]}")
+    if t24:
+        cols = [str(c) for c in t24[0]["df"].columns]
+        commodities = [c for c in ("maize", "wheat", "gram", "arhar", "moong", "urad")
+                       if c in cols]
+        check(">=5 commodity column headers", len(commodities) >= 5,
+              f"got {commodities} from {cols[:8]}")
+
+
+def guard_rbi_bare_year():
+    """Guard M — bare 4-digit year headers recognised (not collapsed to col_N).
+
+    RBI project/implementation tables label columns with single calendar years
+    ("2012 | 2013 | …") rather than fiscal spans. is_year must accept them and
+    _is_year_header_row must stop the data-start detector from demoting the row.
+    """
+    print("Guard M — bare calendar-year header recognition")
+    from backend.app.cleaning.header_builder import is_year, _is_year_header_row
+    import pandas as pd
+    check("is_year('2012') true", is_year("2012"), "bare year rejected")
+    check("is_year('2020-21') true", is_year("2020-21"), "fiscal span rejected")
+    check("is_year('5') false", not is_year("5"), "stray digit accepted")
+    check("is_year('12345') false", not is_year("12345"), "5-digit accepted")
+    row = pd.Series(["Sector/Year", "2012", "2013", "2014", "2015", "2016"])
+    check("year row detected as header", _is_year_header_row(row), "year header row missed")
+    data_row = pd.Series(["1. Atomic energy", "5", "4", "4", "4", "4"])
+    check("data row not a year header", not _is_year_header_row(data_row),
+          "data row misread as year header")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
     # Remember if caller wanted Docling, then force-unset so base guards run on Camelot
     _docling_requested = os.environ.pop("DOCLING_ENABLED", "").lower() in ("1", "true", "yes")
     base_guards = (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi,
-                   guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch)
+                   guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch,
+                   guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

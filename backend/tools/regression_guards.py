@@ -23,6 +23,7 @@ from backend.app.cleaning.header_postprocessor import clean_headers
 from backend.app.cleaning.universal_cleaner import clean_dataframe
 from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows, merge_continuation_values
 from backend.app.cleaning.panel_splitter import split_panels
+from backend.app.cleaning.section_lifter import lift_section_rows
 from backend.app.cleaning.numeric_normalizer import normalize_numeric_columns
 from backend.app.extract.table_extractor import extract_tables
 from backend.app.standardization.table_name_extractor import extract_table_name
@@ -59,6 +60,7 @@ def _pipeline(pdf_path):
         df = apply_headers(df, h)
         df = clean_headers(df)
         df = merge_continuation_values(df)
+        df = lift_section_rows(df)
         df = normalize_numeric_columns(df)
         s = validate_table(df)
         items.append({"table_id": t["table_id"], "name": nm, "page": t["page"],
@@ -149,24 +151,39 @@ def guard_nfhs():
     named = [i for i in items if i["name"] == "India Key Indicators"]
     check("named 'India Key Indicators'", len(named) == 3,
           f"names: {[i['name'] for i in items]}")
-    want = ["indicator", "nfhs6_urban", "nfhs6_rural", "nfhs6_total", "nfhs5_total"]
+    # Fix 3: section banners ("Marriage and Fertility" …) are lifted into a
+    # leading `category` column, so the schema gains it ahead of `indicator`.
+    want = ["category", "indicator", "nfhs6_urban", "nfhs6_rural", "nfhs6_total", "nfhs5_total"]
     good_cols = [i for i in items if list(i["df"].columns) == want]
-    check("NFHS group columns on all 3", len(good_cols) == 3,
+    check("NFHS group columns + category on all 3", len(good_cols) == 3,
           f"first cols: {list(items[0]['df'].columns) if items else []}")
+    # category must be forward-filled onto data rows and section rows removed:
+    # no surviving row may have a blank indicator with all value cells blank.
+    if good_cols:
+        df0 = good_cols[0]["df"].astype(str)
+        cats = [c for c in df0["category"].map(str).unique() if c.strip()]
+        check(">=4 distinct categories lifted", len(cats) >= 4, f"got {cats[:6]}")
+        banner_left = sum(
+            1 for r in df0.values.tolist()
+            if str(r[1]).strip() and all(str(v).strip() in ("", "nan", "None") for v in r[2:])
+        )
+        check("0 section-banner rows left in data", banner_left == 0, f"got {banner_left}")
     # wrapped indicator #41: label + 4 values must sit on ONE reassembled row
+    # (indicator now in col 1, urban in col 2 after the category lift)
     if items:
         body = items[1]["df"] if len(items) > 1 else items[0]["df"]
-        row41 = body[body.iloc[:, 0].astype(str).str.startswith("41.")]
+        row41 = body[body.iloc[:, 1].astype(str).str.startswith("41.")]
         ok = (not row41.empty
-              and re.match(r"^88\.6$", str(row41.iloc[0, 1]).strip()))
+              and re.match(r"^88\.6$", str(row41.iloc[0, 2]).strip()))
         check("wrapped #41 reassembled (label+88.6)", ok,
               f"got {row41.iloc[0].tolist() if not row41.empty else 'missing'}")
     # reassembly should leave essentially no orphan number-rows in the slice
+    # (label column is now col 1 — the indicator — after the category lift)
     NUM = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
     orphans = 0
     for i in items:
         for r in i["df"].astype(str).values.tolist():
-            if not r[0].strip() and sum(1 for v in r[1:] if NUM.match(v.strip())) >= 2:
+            if not str(r[1]).strip() and sum(1 for v in r[2:] if NUM.match(str(v).strip())) >= 2:
                 orphans += 1
     check("<=2 orphan number-rows in slice", orphans <= 2, f"got {orphans}")
 
@@ -266,13 +283,22 @@ def guard_rbi_payment_system():
     check("Table 61 found", bool(t61), f"names: {[s['name'] for s in stitched]}")
     if t61:
         df = t61[0]["df"]
-        cols = list(df.columns)
-        phantom_val_cols = [c for c in cols[1:] if re.fullmatch(r"col(_\d+)?", str(c))]
-        year_cols = [c for c in cols if re.search(r"20\d\d_\d\d", str(c))]
-        check("0 col_N in cols[1+]", not phantom_val_cols,
-              f"phantom: {phantom_val_cols}")
-        check(">=4 year-named columns", len(year_cols) >= 4,
-              f"got {year_cols}")
+        cols = [str(c) for c in df.columns]
+        year_cols = [c for c in cols if re.search(r"20\d\d_\d\d", c)]
+        # Fix 3: "A. Settlement Systems" / "B. Payment Systems" banners are now
+        # lifted into a leading `category` column (was mixed into col0 before).
+        check("category column present", cols[0] == "category", f"got {cols[:3]}")
+        cat_vals = " ".join(df["category"].map(str).unique()).lower()
+        check("Settlement & Payment sections lifted",
+              "settlement" in cat_vals and "payment" in cat_vals, f"got {cat_vals[:80]}")
+        # No phantom among the VALUE columns (the year-named volume/value cols);
+        # the single unnamed instrument-label column ("col") is a separate, known
+        # extraction gap and is the only col_N tolerated.
+        phantom_val_cols = [c for c in year_cols if re.fullmatch(r"col(_\d+)?", c)]
+        unnamed = [c for c in cols if re.fullmatch(r"col(_\d+)?", c)]
+        check("0 col_N among value columns", not phantom_val_cols, f"phantom: {phantom_val_cols}")
+        check("<=1 unnamed label column", len(unnamed) <= 1, f"unnamed: {unnamed}")
+        check(">=4 year-named columns", len(year_cols) >= 4, f"got {year_cols}")
         check(">=20 data rows", len(df) >= 20, f"got {len(df)}")
 
 
@@ -562,6 +588,73 @@ def guard_side_by_side_split():
           f"got {len(split_side_by_side(misaligned))}")
 
 
+def guard_section_lift():
+    """Guard T — in-table section banners become a `category` column; ordinary
+    tables are untouched.
+
+    NFHS/PLFS factsheets print section banners ("Marriage and Fertility") as a
+    label-only row over a block of data. lift_section_rows must pull each into a
+    forward-filled `category` column and drop the banner rows — but ONLY when at
+    least two banners each head real data, so a stray sub-title or a single
+    edition label (PLFS "PLFS 2024") never spawns a phantom column.
+    """
+    print("Guard T — section-row lift (section_lifter)")
+    import pandas as pd
+    from backend.app.cleaning.section_lifter import lift_section_rows
+
+    # (1) two genuine sections -> category column, banners dropped, ffilled
+    sect = pd.DataFrame([
+        ["Marriage and Fertility", "", "", ""],
+        ["1. Women married before 18", "11.4", "14.7", "12.6"],
+        ["2. Total fertility rate", "1.6", "2.1", "1.9"],
+        ["Infant Mortality", "", "", ""],
+        ["3. Neonatal mortality", "18.6", "24.5", "22.0"],
+        ["Note: indicators highlighted in grey.", "", "", ""],
+    ], columns=["indicator", "urban", "rural", "total"])
+    out = lift_section_rows(sect)
+    check("category column added", list(out.columns)[0] == "category",
+          f"got {list(out.columns)}")
+    check("banners + trailing note dropped (3 data rows kept)", len(out) == 3, f"got {len(out)}")
+    if "category" in out.columns:
+        check("category forward-filled",
+              list(out["category"]) == ["Marriage and Fertility", "Marriage and Fertility",
+                                        "Infant Mortality"],
+              f"got {list(out['category'])}")
+        check("indicator values intact",
+              list(out["indicator"]) == ["1. Women married before 18",
+                                         "2. Total fertility rate", "3. Neonatal mortality"])
+
+    # (2) single banner -> no-op (not genuine sectioning)
+    one = pd.DataFrame([
+        ["PLFS 2024", "", "", ""],
+        ["15-29", "10", "20", "30"],
+        ["30-44", "11", "21", "31"],
+    ], columns=["age_group", "a", "b", "c"])
+    check("single banner -> unchanged",
+          list(lift_section_rows(one).columns) == ["age_group", "a", "b", "c"],
+          f"got {list(lift_section_rows(one).columns)}")
+
+    # (3) two ADJACENT banners (no data between) -> no-op (wrapped title, not sections)
+    adj = pd.DataFrame([
+        ["PLFS 2024", "", "", ""],
+        ["January-December 2024", "", "", ""],
+        ["15-29", "10", "20", "30"],
+        ["30-44", "11", "21", "31"],
+    ], columns=["age_group", "a", "b", "c"])
+    check("adjacent banners -> unchanged (1 real section)",
+          "category" not in lift_section_rows(adj).columns,
+          f"got {list(lift_section_rows(adj).columns)}")
+
+    # (4) ordinary table (every row has data) -> no-op
+    normal = pd.DataFrame([
+        ["Andhra Pradesh", "4870", "6782"],
+        ["Bihar", "3773", "6459"],
+        ["Goa", "6996", "9000"],
+    ], columns=["state", "rural", "urban"])
+    check("ordinary table -> unchanged",
+          list(lift_section_rows(normal).columns) == ["state", "rural", "urban"])
+
+
 def guard_numeric_normalization():
     """Guard R — numeric columns cast to real numbers; merged/label columns spared.
 
@@ -662,7 +755,8 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_numeric_normalization, guard_ghost_suppression)
+                   guard_section_lift, guard_numeric_normalization,
+                   guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

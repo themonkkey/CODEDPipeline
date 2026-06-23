@@ -23,6 +23,7 @@ from backend.app.cleaning.header_postprocessor import clean_headers
 from backend.app.cleaning.universal_cleaner import clean_dataframe
 from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows, merge_continuation_values
 from backend.app.cleaning.panel_splitter import split_panels
+from backend.app.cleaning.numeric_normalizer import normalize_numeric_columns
 from backend.app.extract.table_extractor import extract_tables
 from backend.app.standardization.table_name_extractor import extract_table_name
 from backend.app.standardization.table_stitcher import stitch_tables
@@ -58,6 +59,7 @@ def _pipeline(pdf_path):
         df = apply_headers(df, h)
         df = clean_headers(df)
         df = merge_continuation_values(df)
+        df = normalize_numeric_columns(df)
         s = validate_table(df)
         items.append({"table_id": t["table_id"], "name": nm, "page": t["page"],
                       "df": df, "passed": s["passed"], "reason": s["reason"]})
@@ -560,6 +562,96 @@ def guard_side_by_side_split():
           f"got {len(split_side_by_side(misaligned))}")
 
 
+def guard_numeric_normalization():
+    """Guard R — numeric columns cast to real numbers; merged/label columns spared.
+
+    Camelot ships every cell as a string ("45,544", "(7.5)", "12.3%", "-"), so a
+    numeric column lands as object dtype and df.sum()/groupby silently break.
+    normalize_numeric_columns must:
+      - strip thousands separators / footnote markers and cast (>=80% numeric col)
+      - parse parenthesised negatives, percent, dash/blank -> None (blank on export)
+      - keep whole values as int (clean "45544", never "45544.0")
+      - REFUSE a column carrying merged continuation cells ("16411581 (15878397)")
+      - leave label/text columns untouched
+    """
+    print("Guard R — numeric normalization (numeric_normalizer)")
+    import pandas as pd
+    from backend.app.cleaning.numeric_normalizer import (
+        normalize_numeric_columns, _to_number, _column_is_castable,
+    )
+    # cell-level parsing
+    check("'45,544' -> 45544 int", _to_number("45,544") == 45544
+          and isinstance(_to_number("45,544"), int))
+    check("'(7.5)' -> -7.5", _to_number("(7.5)") == -7.5)
+    check("'12.3%' -> 12.3", _to_number("12.3%") == 12.3)
+    check("'3348245*' -> 3348245", _to_number("3348245*") == 3348245)
+    check("'-' -> None", _to_number("-") is None)
+    check("'n.a.' -> None", _to_number("n.a.") is None)
+    check("'' -> None", _to_number("") is None)
+    check("'Andhra Pradesh' -> None", _to_number("Andhra Pradesh") is None)
+    # column castability
+    check("clean numeric column castable",
+          _column_is_castable(["45,544", "3,773", "2079", "-"]))
+    check("merged-continuation column spared",
+          not _column_is_castable(["16411581 (15878397)", "10 20", "30"]))
+    check("text column not castable",
+          not _column_is_castable(["Rural", "Urban", "Total"]))
+    # frame-level: value cols cast, label & merged cols preserved
+    df = pd.DataFrame({
+        "state": ["Andhra Pradesh", "Bihar", "Goa"],
+        "mpce": ["4,870", "3,773", "6,996"],
+        "pct": ["39", "(7.5)", "12.3%"],
+        "provisional": ["16411581 (15878397)", "100 (90)", "5 (4)"],
+    })
+    out = normalize_numeric_columns(df)
+    check("label column untouched", list(out["state"]) == ["Andhra Pradesh", "Bihar", "Goa"])
+    check("mpce cast to ints (no .0)",
+          [str(v) for v in out["mpce"]] == ["4870", "3773", "6996"],
+          f"got {[str(v) for v in out['mpce']]}")
+    check("pct parsed (neg paren, percent)",
+          list(out["pct"]) == [39, -7.5, 12.3], f"got {list(out['pct'])}")
+    check("merged-continuation column kept as text",
+          list(out["provisional"]) == ["16411581 (15878397)", "100 (90)", "5 (4)"])
+    # idempotent
+    check("idempotent on second pass",
+          [str(v) for v in normalize_numeric_columns(out)["mpce"]] == ["4870", "3773", "6996"])
+
+
+def guard_ghost_suppression():
+    """Guard S — header-only 'index legend' fragments are dropped, real tables kept.
+
+    Garhwal-census village-directory spillover leaves a single row that is just
+    the column-number band ("1 | 2 | 3 | 4 | 5 | 6"); it passes the old shape
+    checks but holds no data. validate_table must reject it (index_legend_only)
+    while a one-row KPI strip of real values and any normal table still pass.
+    """
+    print("Guard S — ghost / index-legend suppression (validate_table)")
+    import pandas as pd
+    from backend.app.validation.table_validator import validate_table, _is_index_legend_row
+    # row-level discrimination
+    check("['1','2','3','4'] is legend", _is_index_legend_row(["1", "2", "3", "4"]))
+    check("['1 2 3','4','5','6'] is legend", _is_index_legend_row(["1 2 3", "4", "5", "6"]))
+    check("['(1)','(2)','(3)'] is legend", _is_index_legend_row(["(1)", "(2)", "(3)"]))
+    check("KPI real values not legend",
+          not _is_index_legend_row(["45.2", "1,234", "78"]))
+    check("section text row not legend",
+          not _is_index_legend_row(["Marriage and Fertility", "", ""]))
+    check("non-ascending small ints not legend",
+          not _is_index_legend_row(["3", "1", "2"]))
+    # table-level
+    legend = pd.DataFrame([["1", "2", "3", "4", "5", "6"]],
+                          columns=["col", "a", "b", "c", "d", "e"])
+    r = validate_table(legend)
+    check("legend-only table rejected", not r["passed"] and r["reason"] == "index_legend_only",
+          f"got {r}")
+    kpi = pd.DataFrame([["45.2", "1234", "78.9"]], columns=["rate", "count", "pct"])
+    check("one-row KPI strip kept", validate_table(kpi)["passed"], f"got {validate_table(kpi)}")
+    normal = pd.DataFrame(
+        [["Andhra Pradesh", "4870", "6782"], ["Bihar", "3773", "6459"]],
+        columns=["state", "rural", "urban"])
+    check("normal table kept", validate_table(normal)["passed"])
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -569,7 +661,8 @@ if __name__ == "__main__":
                    guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch,
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
-                   guard_header_recovery_gate, guard_side_by_side_split)
+                   guard_header_recovery_gate, guard_side_by_side_split,
+                   guard_numeric_normalization, guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

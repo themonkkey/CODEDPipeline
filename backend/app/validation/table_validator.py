@@ -84,6 +84,50 @@ def _is_frontmatter(df):
     return False
 
 
+# a cell holding only small column-index tokens: "1", "(2)", "1 2 3"
+_INDEX_TOKEN = re.compile(r"^\(?\d{1,2}\)?$")
+
+
+def _is_index_legend_row(cells):
+    """True when a row is nothing but the column-number legend a PDF prints
+    under the header ("1 | 2 | 3 | …" or "1 2 3 | 4 | 5").
+
+    Garhwal-census fragments leave this band as the ONLY surviving data row, so
+    a table whose every row is such a legend carries no real data and must be
+    dropped.  The tokens must form a short, strictly-ascending small-int run so
+    a genuine one-row KPI strip (real values, not 1..N) is never mistaken."""
+    ints = []
+    for c in cells:
+        c = str(c).strip()
+        if c in ("", "nan", "None"):
+            continue
+        toks = c.split()
+        if not all(_INDEX_TOKEN.match(t) for t in toks):
+            return False
+        ints.extend(int(re.sub(r"\D", "", t)) for t in toks)
+    if len(ints) < 2:
+        return False
+    ascending = all(b > a for a, b in zip(ints, ints[1:]))
+    return ascending and ints[0] <= 3 and ints[-1] <= 40
+
+
+def _to_text_frame(df):
+    """A blank-for-missing string view of df.
+
+    After numeric_normalizer casts a column, its missing cells are None and the
+    column may be a StringDtype whose na-value is float nan — both of which leak
+    a bare float through df.astype(str).values. Map every cell to "" / str(v)
+    so the string-based validation checks never meet a non-string."""
+    def s(v):
+        if v is None:
+            return ""
+        if isinstance(v, float) and v != v:  # nan
+            return ""
+        return str(v)
+    mapper = df.map if hasattr(df, "map") else df.applymap
+    return mapper(s)
+
+
 def validate_table(df):
 
     rows = len(df)
@@ -113,7 +157,8 @@ def validate_table(df):
             "reason": "too_few_columns"
         }
 
-    cells = df.astype(str).values.flatten()
+    sdf = _to_text_frame(df)
+    cells = sdf.values.flatten()
     total = len(cells)
 
     empty = sum(
@@ -122,10 +167,20 @@ def validate_table(df):
     )
 
     # front-matter pages (TOC, staff lists) are not statistical data
-    if _is_frontmatter(df):
+    if _is_frontmatter(sdf):
         return {
             "passed": False,
             "reason": "front_matter"
+        }
+
+    # ghost table: every row is just the column-number legend ("1 | 2 | 3 …")
+    # — a header-only fragment with no real data (census village-directory
+    # spillover). One real data row (KPI strip) is kept; a legend-only one is not.
+    row_lists = sdf.values.tolist()
+    if row_lists and all(_is_index_legend_row(r) for r in row_lists):
+        return {
+            "passed": False,
+            "reason": "index_legend_only"
         }
 
     # phantom tables (charts parsed as tables) are almost entirely blank

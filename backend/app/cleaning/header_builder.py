@@ -49,14 +49,37 @@ DISTRICT_NAMES = {
 
 def is_year(text):
 
-    text = str(text)
+    text = str(text).strip()
 
-    return bool(
-        re.search(
-            r"\d{4}[-–]\d{2}",
-            text
-        )
-    )
+    # fiscal-year span ("2020-21", "1993–94")
+    if re.search(r"\d{4}[-–]\d{2}", text):
+        return True
+
+    # bare calendar year used as a column header ("2012", "2018"): many
+    # RBI project/implementation tables label columns with single years
+    # rather than spans, and these were falling through to col_N.
+    if re.fullmatch(r"(?:19|20)\d{2}", text):
+        return True
+
+    return False
+
+
+def _is_year_header_row(row):
+    """
+    A row whose value cells are predominantly year labels — a column header,
+    not data. Used to stop the data-start detector from demoting it.
+    Column 0 (the row-label column, e.g. "Sector/Year") is ignored.
+    """
+
+    values = [str(v).strip() for v in list(row)[1:]]
+    non_empty = [v for v in values if v and v not in ("nan", "None")]
+
+    if len(non_empty) < 3:
+        return False
+
+    year_like = sum(1 for v in non_empty if is_year(v))
+
+    return year_like >= max(3, len(non_empty) * 0.7)
 
 
 VOWELS = set("aeiou")
@@ -389,6 +412,12 @@ def apply_headers(df, header_rows):
         data_start is not None
         and data_start < header_rows
     ):
+        # A row of bare calendar years ("2012 | 2013 | 2014 …") looks numeric
+        # to the data-start detector, which would demote the year HEADER to a
+        # data row and collapse every column to col_N. Advance past any such
+        # year-header rows before trusting data_start.
+        while data_start < header_rows and _is_year_header_row(df.iloc[data_start]):
+            data_start += 1
         header_rows = data_start
 
     header_df = df.iloc[:header_rows].copy()
@@ -449,12 +478,29 @@ def apply_headers(df, header_rows):
             continue
 
         # (b) prose-description row: all cells are 1-2 words, no statistical
-        #     subdivision vocabulary, no year labels → word-fragments of a title
+        #     subdivision vocabulary, no year labels → word-fragments of a title.
+        #     Crucial guard: a wrapped TITLE lands in CONTIGUOUS cells (camelot
+        #     spills "Labour Force Survey" across adjacent columns), whereas a
+        #     multi-level COLUMN-HEADER row ("Year | | Oilseeds | | Coffee |
+        #     Cotton") is spread with GAPS, each label sitting over its data
+        #     column. Only contiguous short-word rows are titles; gapped rows
+        #     carry real column labels and must be kept.
         full_text = " ".join(non_empty)
         all_short = all(len(c.split()) <= 2 for c in non_empty)
         has_subdiv = bool(_SUBDIVISION_VOCAB.search(full_text))
         has_year = bool(YEAR_PATTERN.search(full_text))
-        if all_short and not has_subdiv and not has_year and len(non_empty) >= 3:
+        positions = [j for j, c in enumerate(cells) if c and c not in ("nan", "None")]
+        contiguous = bool(positions) and (positions[-1] - positions[0] + 1 == len(positions))
+        # A row that labels (nearly) every column is a real header, never a
+        # title — a spread title is a SHORT contiguous block that leaves later
+        # columns empty (e.g. "Labour Force Survey" in cols 0-3 of a 10-col
+        # grid). Require an unfilled tail so fully-labelled commodity/MSP
+        # header rows (Year | Paddy | Maize | Wheat | …) survive.
+        not_full = len(non_empty) < len(cells)
+        if (
+            all_short and not has_subdiv and not has_year
+            and len(non_empty) >= 3 and contiguous and not_full
+        ):
             title_rows.add(i)
 
     # Forward-fill parent group labels into sibling columns.

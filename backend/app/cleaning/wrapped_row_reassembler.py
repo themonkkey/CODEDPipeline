@@ -134,3 +134,62 @@ def reassemble_wrapped_rows(df):
     import pandas as pd
 
     return pd.DataFrame(out, columns=df.columns)
+
+
+# a parenthesised or bare numeric continuation cell: "(6015003)", "23,081", "8.0"
+_CONT_VALUE = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+
+
+def merge_continuation_values(df):
+    """
+    RBI tables routinely stack a SECOND figure directly below the main one in
+    the same visual cell — a provisional / "of which" / net value printed in
+    parentheses on the next physical line:
+
+        ['Non-food Credit', '13655330', '16411581', '18207404']
+        ['',                '',         '(15878397)','(17786038)']   <- continuation
+
+        ['2023-24', '6105610', '949', '6106558', ...]
+        ['',        '',        '',    '(6015003)', ...]              <- continuation
+
+    Camelot emits these as standalone value-only rows whose label column is
+    empty.  They are not new records — they belong to the row above.  Merge
+    each non-empty value into the preceding *labelled* data row at the same
+    column: fill the cell if empty, otherwise append "main (continuation)".
+
+    Runs AFTER apply_headers / clean_headers, so column 0 is the real label
+    column and the top header rows are already consumed.
+    """
+
+    if df.empty or df.shape[1] < 2:
+        return df
+
+    rows = df.values.tolist()
+    out = []
+
+    for row in rows:
+        cells = [_cell(v) for v in row]
+        non_empty = [(j, c) for j, c in enumerate(cells) if c]
+
+        # continuation orphan: label column empty, ≥1 value, every populated
+        # cell (beyond col 0) is numeric / parenthesised-numeric
+        is_continuation = (
+            not cells[0]
+            and len(non_empty) >= 1
+            and all(_CONT_VALUE.match(c) for _, c in non_empty)
+        )
+
+        if is_continuation and out and _cell(out[-1][0]):
+            prev = out[-1]
+            for j, c in non_empty:
+                if j >= len(prev):
+                    continue
+                existing = _cell(prev[j])
+                prev[j] = c if not existing else f"{existing} {c}"
+            continue
+
+        out.append(list(row))
+
+    import pandas as pd
+
+    return pd.DataFrame(out, columns=df.columns)

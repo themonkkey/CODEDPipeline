@@ -35,7 +35,7 @@ def run_pipeline(job_id: str, pdf_path: str):
     from backend.app.cleaning.header_detector import detect_header_rows
     from backend.app.cleaning.header_postprocessor import clean_headers
     from backend.app.cleaning.universal_cleaner import clean_dataframe
-    from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
+    from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows, merge_continuation_values
     from backend.app.cleaning.panel_splitter import split_panels
     from backend.app.extract.table_extractor import extract_tables, InvalidPDFError
     from backend.app.standardization.metadata_builder import build_metadata
@@ -76,6 +76,7 @@ def run_pipeline(job_id: str, pdf_path: str):
             )
             df = apply_headers(df, h)
             df = clean_headers(df)
+            df = merge_continuation_values(df)
             status = validate_table(df)
 
             if status["passed"]:

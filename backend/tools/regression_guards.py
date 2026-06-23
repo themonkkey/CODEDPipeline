@@ -21,7 +21,7 @@ from backend.app.cleaning.header_builder import apply_headers
 from backend.app.cleaning.header_detector import detect_header_rows
 from backend.app.cleaning.header_postprocessor import clean_headers
 from backend.app.cleaning.universal_cleaner import clean_dataframe
-from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows
+from backend.app.cleaning.wrapped_row_reassembler import reassemble_wrapped_rows, merge_continuation_values
 from backend.app.cleaning.panel_splitter import split_panels
 from backend.app.extract.table_extractor import extract_tables
 from backend.app.standardization.table_name_extractor import extract_table_name
@@ -57,6 +57,7 @@ def _pipeline(pdf_path):
         nm = extract_table_name(df, h, translate_text(cap) if cap else None)
         df = apply_headers(df, h)
         df = clean_headers(df)
+        df = merge_continuation_values(df)
         s = validate_table(df)
         items.append({"table_id": t["table_id"], "name": nm, "page": t["page"],
                       "df": df, "passed": s["passed"], "reason": s["reason"]})

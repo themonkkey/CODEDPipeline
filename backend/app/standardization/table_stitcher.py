@@ -32,6 +32,27 @@ def _strong_title(name):
     return bool(name) and bool(_STRONG_TITLE.match(str(name).strip()))
 
 
+_FALLBACK_NAME = re.compile(r"^(col(_\d+)?|_ext_\d+)$")
+
+
+def _upgrade_names(base_cols, cont_cols):
+    """
+    Merge two column-name lists positionally, preferring a real name over an
+    unnamed col_N / _ext_N fallback. Returns base length. Keeps base names
+    except where base is a fallback and the continuation supplies a real name.
+    """
+    base = list(base_cols)
+    cont = list(cont_cols)
+    out = []
+    for i, b in enumerate(base):
+        c = cont[i] if i < len(cont) else None
+        if _FALLBACK_NAME.fullmatch(str(b)) and c is not None and not _FALLBACK_NAME.fullmatch(str(c)):
+            out.append(c)
+        else:
+            out.append(b)
+    return out
+
+
 def _continues(prev, cur):
     """cur is a continuation of prev if it is on the next page with the
     same shape, and shares either the extracted title or the header row."""
@@ -132,7 +153,11 @@ def stitch_tables(items):
                 cont = it["df"].set_axis(range(it["df"].shape[1]), axis=1)
                 base = prev["df"].set_axis(range(prev["df"].shape[1]), axis=1)
                 merged = pd.concat([base, cont], ignore_index=True)
-                merged.columns = prev["df"].columns
+                # adopt real names from the continuation when the base column
+                # is an unnamed col_N fallback — the header often lands on a
+                # later page fragment while the first fragment is a headerless
+                # mid-table slice (RBI wide state/sector matrices)
+                merged.columns = _upgrade_names(prev["df"].columns, it["df"].columns)
             else:
                 # width differs by ≤2: use positional concat (avoids duplicate-
                 # column label errors), then restore the wider frame's column names

@@ -411,6 +411,58 @@ def guard_rbi_bare_year():
           "data row misread as year header")
 
 
+def guard_rbi_multilevel_header():
+    """Guard N — RBI Table 33 Production/Imports of Crude Oil p83: sub-header kept.
+
+    The sub-header row "Crude Oil | POL Products | Crude Oil | POL Products" sits
+    under the group row "Production | Imports" and over numeric data. The
+    prose-title heuristic used to discard it (contiguous short words) until the
+    numeric-below guard was added. Columns must combine group+sub names.
+    """
+    print("Guard N — RBI Table 33 multi-level header p83 (numeric-below guard)")
+    rbi = os.path.join(ROOT, "Testpdfs/new_batch/rbi_annual_report_2024-25.pdf")
+    path = _slice(rbi, 83, 83)
+    items = [i for i in _pipeline(path) if i["passed"]]
+    os.unlink(path)
+    t33 = [i for i in items if i["name"] and "33" in str(i["name"])]
+    check("Table 33 found", bool(t33), f"names: {[i['name'] for i in items]}")
+    if t33:
+        cols = [str(c) for c in t33[0]["df"].columns]
+        phantom = [c for c in cols[1:] if re.fullmatch(r"(col(_\d+)?|_ext_\d+)", c)]
+        multilevel = [c for c in cols if "_" in c and
+                      any(g in c for g in ("production", "imports"))]
+        check("0 col_N in value columns", not phantom, f"phantom: {phantom} all: {cols}")
+        check(">=2 group_sub combined names", len(multilevel) >= 2,
+              f"got {multilevel} from {cols}")
+
+
+def guard_numeric_below_unit():
+    """Guard O — header-row-over-numeric-data is NOT discarded as a prose title.
+
+    Synthetic table: a contiguous short-word header row sits over numeric data.
+    apply_headers must keep those labels (the Fix-1 numeric-below guard), not
+    collapse to col_N.
+    """
+    print("Guard O — prose-title numeric-below guard (synthetic)")
+    import pandas as pd
+    from backend.app.cleaning.header_builder import apply_headers
+    # row0: group/sub header over numeric data; rows1+ : numeric data
+    df = pd.DataFrame([
+        ["", "Crude Oil", "POL Products", "Crude Oil", "POL Products"],
+        ["1990", "10", "20", "30", "40"],
+        ["1991", "11", "21", "31", "41"],
+        ["1992", "12", "22", "32", "42"],
+        ["1993", "13", "23", "33", "43"],
+    ])
+    out = apply_headers(df, 1)
+    cols = [str(c) for c in out.columns]
+    phantom = [c for c in cols[1:] if re.fullmatch(r"(col(_\d+)?|_ext_\d+)", c)]
+    check("header over numeric data kept (0 col_N)", not phantom,
+          f"got {cols}")
+    check("crude/pol labels present", any("crude" in c for c in cols),
+          f"got {cols}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -418,7 +470,8 @@ if __name__ == "__main__":
     _docling_requested = os.environ.pop("DOCLING_ENABLED", "").lower() in ("1", "true", "yes")
     base_guards = (guard_des, guard_darpg, guard_plfs, guard_nfhs, guard_nfhs5, guard_fr375_kpi,
                    guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch,
-                   guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year)
+                   guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
+                   guard_rbi_multilevel_header, guard_numeric_below_unit)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

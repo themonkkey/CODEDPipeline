@@ -36,7 +36,7 @@ def _continues(prev, cur):
     """cur is a continuation of prev if it is on the next page with the
     same shape, and shares either the extracted title or the header row."""
 
-    if cur["page"] - prev["pages"][-1] != 1:
+    if cur["page"] - prev["pages"][-1] > 2:
         return False
 
     a, b = prev["df"], cur["df"]
@@ -134,11 +134,16 @@ def stitch_tables(items):
                 merged = pd.concat([base, cont], ignore_index=True)
                 merged.columns = prev["df"].columns
             else:
-                # width differs by ≤2 (one fragment lost a separator column):
-                # align on column names so no column is silently dropped
-                cont = it["df"].copy()
-                cont.columns = prev["df"].columns[:cont.shape[1]]
-                merged = pd.concat([prev["df"], cont], ignore_index=True)
+                # width differs by ≤2: use positional concat (avoids duplicate-
+                # column label errors), then restore the wider frame's column names
+                base_df, cont_df = prev["df"], it["df"]
+                wider_cols = (base_df.columns if base_df.shape[1] >= cont_df.shape[1]
+                              else cont_df.columns)
+                w = max(base_df.shape[1], cont_df.shape[1])
+                b = base_df.set_axis(range(base_df.shape[1]), axis=1)
+                c = cont_df.set_axis(range(cont_df.shape[1]), axis=1)
+                merged = pd.concat([b, c], ignore_index=True)
+                merged.columns = list(wider_cols) + [f"_ext_{i}" for i in range(len(wider_cols), merged.shape[1])]
             prev["df"] = merged
             prev["pages"].append(it["page"])
 

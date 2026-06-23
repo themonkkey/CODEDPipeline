@@ -191,7 +191,18 @@ def clean_header(text):
 _SUBDIVISION_VOCAB = re.compile(
     r"\b(rural|urban|males?|females?|persons?|transgender|total|combined|state|"
     r"district|zone|region|sector|category|quarterly|annual|monthly|"
-    r"workers?|employed|employment|rate|number|percentage|industry)\b",
+    r"workers?|employed|employment|rate|number|percentage|industry|"
+    r"volume|value|debit|credit|assets?|liabilit(?:y|ies)|deposits?|"
+    r"receipts?|disbursements?|production|currency|banks?|reserve|"
+    r"broad|narrow|income|expenditure|index|prices?|average|"
+    r"weighted|nominal|effective|balance|payments?|trade|gross|net|"
+    r"fiscal|capital|revenue|sanctioned|outstanding|circulation|"
+    r"quantity|turnover|amount|exports?|imports?|advances?|"
+    r"borrowings?|investments?|securities?|loans?|interest|"
+    r"supply|demand|inflation|growth|share|ratio|weight|"
+    r"proceeds?|advances?|claims?|premium|insured|branches?|"
+    r"compet(?:itive)?|non.compet(?:itive)?|bids?|allotted|"
+    r"yield|maturity|coupon|tenor|face|notified)\b",
     re.IGNORECASE,
 )
 # Serial-index cells like (1) (2) (3) used as column-numbering rows
@@ -454,8 +465,18 @@ def apply_headers(df, header_rows):
 
     for i in range(len(header_df)):
 
-        if i in title_rows or i == last_active:
+        if i in title_rows:
             continue
+
+        if i == last_active:
+            # Never ffill the sub-label row (Urban/Rural/Volume/Value …) because
+            # its cells are per-column, not spanning group labels.
+            # EXCEPTION: single-row headers where the year IS the group label
+            # ("2020-21 | | 2021-22 | |") — these must be filled so the empty
+            # sibling cells receive the year name.
+            row_text = " ".join(str(v).strip() for v in header_df.iloc[i].tolist())
+            if not YEAR_PATTERN.search(row_text):
+                continue
 
         row = header_df.iloc[i].astype(str).str.strip()
 
@@ -538,6 +559,37 @@ def apply_headers(df, header_rows):
         columns.append(header)
 
     data_df.columns = columns
+
+    #
+    # Absorb missed sub-header row: detect_header_rows sometimes stops one
+    # row too early, leaving the sub-label row ("Volume | Value | Volume …",
+    # "Credit | Debit | Net …") as the first data row. If the first data row
+    # is all-text, compact (≤2 words/cell), has statistical vocabulary, and
+    # has no digit-containing cells, fold it into the column names and drop it.
+    #
+    _COL_N_QUICK = re.compile(r"^col(_\d+)?$")
+    if len(data_df) > 1:
+        first = [str(v).strip() for v in data_df.iloc[0].tolist()]
+        non_empty_sub = [v for v in first if v and v not in ("nan", "None")]
+        if (
+            len(non_empty_sub) >= max(3, len(first) // 2)
+            and all(len(v.split()) <= 2 for v in non_empty_sub)
+            and not any(re.search(r"\d", v) for v in non_empty_sub)
+            and bool(_SUBDIVISION_VOCAB.search(" ".join(non_empty_sub)))
+        ):
+            new_cols = []
+            for col_idx, (col_name, sub_val) in enumerate(zip(data_df.columns, first)):
+                sv = sub_val.strip()
+                if sv and sv not in ("nan", "None"):
+                    sc = clean_header(sv)
+                    if _COL_N_QUICK.fullmatch(str(col_name)):
+                        new_cols.append(sc)
+                    else:
+                        new_cols.append(f"{col_name}_{sc}")
+                else:
+                    new_cols.append(str(col_name))
+            data_df.columns = new_cols
+            data_df = data_df.iloc[1:].reset_index(drop=True)
 
     #
     # Drop ghost columns: camelot sometimes emits columns whose data

@@ -148,4 +148,12 @@ def stitch_tables(items):
         else:
             out.append(it)
 
+    # Drop exact duplicate rows that accumulate when the same data appears
+    # in both a summary table and a detail table (Econ Survey pattern).
+    for it in out:
+        df = it["df"]
+        deduped = df.drop_duplicates()
+        if len(deduped) < len(df):
+            it["df"] = deduped.reset_index(drop=True)
+
     return out

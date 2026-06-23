@@ -96,7 +96,7 @@ def _looks_english(word):
     )
 
 
-def _clean_title_words(text, limit=10):
+def _clean_title_words(text, limit=18):
 
     words = [
         w for w in text.split()
@@ -161,7 +161,7 @@ def extract_table_name(df, header_rows, caption=None):
             words = m.group(2).strip().rstrip("–- ").split()
             lettered = [w for w in words if re.search(r"[A-Za-z]", w)]
             if len(lettered) >= 2:
-                return f"{m.group(1)} " + " ".join(words[:10])
+                return f"{m.group(1)} " + " ".join(words[:18])
 
     # 2b) caption text — but only if it reads like a TITLE, not prose:
     #    a short line (2–10 words) without sentence punctuation.

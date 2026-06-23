@@ -113,6 +113,7 @@ def run_pipeline(job_id: str, pdf_path: str):
     passed = stitch_tables(passed)
 
     catalog = []
+    table_dfs = {}
     unnamed_seq = 0
 
     for it in passed:
@@ -125,10 +126,19 @@ def run_pipeline(job_id: str, pdf_path: str):
         catalog.append(
             build_metadata(it["table_id"], name, it["page"], it["df"])
         )
+        table_dfs[it["table_id"]] = it["df"]
         it["df"].to_csv(csv_dir / f"table_{it['table_id']}.csv", index=False)
 
     pd.DataFrame(catalog).to_csv(results_dir / "table_catalog.csv", index=False)
     pd.DataFrame(failed).to_csv(results_dir / "failed_tables.csv", index=False)
+
+    # single navigable workbook: Contents (TOC) tab + one sheet per table
+    try:
+        from backend.app.export.excel_exporter import build_workbook
+        with open(results_dir / "workbook.xlsx", "wb") as f:
+            f.write(build_workbook(table_dfs, catalog).getbuffer())
+    except Exception as e:
+        JOBS[job_id]["workbook_error"] = str(e)
 
     JOBS[job_id]["status"] = "done"
     JOBS[job_id]["catalog"] = catalog
@@ -183,6 +193,9 @@ def download_all(job_id: str):
         catalog = results_dir / "table_catalog.csv"
         if catalog.exists():
             zf.write(catalog, "table_catalog.csv")
+        workbook = results_dir / "workbook.xlsx"
+        if workbook.exists():
+            zf.write(workbook, "workbook.xlsx")
     buf.seek(0)
 
     return StreamingResponse(
@@ -191,6 +204,18 @@ def download_all(job_id: str):
         headers={
             "Content-Disposition": f"attachment; filename=results_{job_id[:8]}.zip"
         },
+    )
+
+
+@app.get("/api/download/{job_id}/workbook.xlsx")
+def download_workbook(job_id: str):
+    path = JOBS_DIR / job_id / "workbook.xlsx"
+    if not path.exists():
+        return {"error": "not found"}
+    return FileResponse(
+        str(path),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"tables_{job_id[:8]}.xlsx",
     )
 
 

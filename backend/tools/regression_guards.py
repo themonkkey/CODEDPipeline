@@ -655,6 +655,63 @@ def guard_section_lift():
           list(lift_section_rows(normal).columns) == ["state", "rural", "urban"])
 
 
+def guard_workbook_toc():
+    """Guard U — navigable workbook: Contents tab first, readable sheet codes,
+    full untruncated titles, ghost frames excluded.
+
+    A 600-sheet census workbook is unusable if every tab is "table_517" and the
+    titles are clipped at 10 words. build_workbook must put a Contents/TOC sheet
+    first that maps each short, human-readable sheet code back to the full title
+    with page + dimensions, and must never emit a tab for an empty frame.
+    """
+    print("Guard U — navigable workbook + TOC (excel_exporter)")
+    import pandas as pd
+    from openpyxl import load_workbook
+    from backend.app.export.excel_exporter import build_workbook, _sheet_name
+    from backend.app.standardization.table_name_extractor import _clean_title_words
+
+    # title truncation lifted: a long real title keeps >10 words
+    long_title = ("Number and percentage distribution of households by source of "
+                  "lighting and type of fuel used for cooking across rural and urban areas")
+    kept = _clean_title_words(long_title)
+    check("long title not clipped at 10 words", len(kept.split()) > 10, f"got {len(kept.split())} words")
+
+    # sheet codes are readable and Excel-legal
+    s1 = _sheet_name("Table 6.2 Sex Ratio of Rural Population", 17, set())
+    check("sheet code carries number + words", s1.startswith("T6_2") and "Sex" in s1, f"got {s1}")
+    used = {"T6_2_Sex_Ratio"}
+    s2 = _sheet_name("Table 6.2 Sex Ratio of Rural Population", 18, used)
+    check("duplicate sheet code disambiguated", s2 != "T6_2_Sex_Ratio" and len(s2) <= 31, f"got {s2}")
+    s3 = _sheet_name(None, 99, set())
+    check("untitled falls back to table id", s3 == "table_99", f"got {s3}")
+
+    # build a workbook with a real table, an untitled one, and a ghost(empty) one
+    dfs = {
+        1: pd.DataFrame([["AP", "10", "20"], ["Bihar", "11", "21"]],
+                        columns=["state", "rural", "urban"]),
+        2: pd.DataFrame([["x", "1"]], columns=["a", "b"]),
+        3: pd.DataFrame(columns=["col", "col_1"]),  # ghost: no rows
+    }
+    catalog = [
+        {"table_id": 1, "table_name": "Table 6.2 " + long_title, "page": 12},
+        {"table_id": 2, "table_name": None, "page": 13},
+        {"table_id": 3, "table_name": "Ghost", "page": 14},
+    ]
+    buf = build_workbook(dfs, catalog)
+    wb = load_workbook(buf)
+    check("Contents/TOC is the first sheet", wb.sheetnames[0] == "Contents",
+          f"got {wb.sheetnames[:3]}")
+    check("ghost frame got no sheet", len(wb.sheetnames) == 1 + 2,
+          f"sheets: {wb.sheetnames}")
+    toc = wb["Contents"]
+    header = [toc.cell(row=1, column=c).value for c in range(1, 7)]
+    check("TOC header has Name/Page/Rows/Cols",
+          header == ["#", "Table Name", "PDF Page", "Rows", "Cols", "Sheet"], f"got {header}")
+    names = [toc.cell(row=r, column=2).value for r in range(2, 4)]
+    check("TOC lists full title (t-code -> real title)",
+          any(n and len(str(n).split()) > 10 for n in names), f"got {names}")
+
+
 def guard_numeric_normalization():
     """Guard R — numeric columns cast to real numbers; merged/label columns spared.
 
@@ -755,8 +812,8 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_section_lift, guard_numeric_normalization,
-                   guard_ghost_suppression)
+                   guard_section_lift, guard_workbook_toc,
+                   guard_numeric_normalization, guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

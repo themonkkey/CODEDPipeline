@@ -41,7 +41,7 @@ def _continues(prev, cur):
 
     a, b = prev["df"], cur["df"]
 
-    if a.shape[1] != b.shape[1]:
+    if abs(a.shape[1] - b.shape[1]) > 2:
         return False
 
     # same explicit title repeated on the next page
@@ -127,11 +127,19 @@ def stitch_tables(items):
             # InvalidIndexError when columns contain duplicates
             # (e.g. several unnamed "col" columns); _continues already
             # guarantees equal width
-            cont = it["df"].set_axis(range(it["df"].shape[1]), axis=1)
-            base = prev["df"].set_axis(range(prev["df"].shape[1]), axis=1)
-            prev["df"] = pd.concat(
-                [base, cont], ignore_index=True
-            ).set_axis(prev["df"].columns, axis=1)
+            if prev["df"].shape[1] == it["df"].shape[1]:
+                # equal width: positional concat preserves column names exactly
+                cont = it["df"].set_axis(range(it["df"].shape[1]), axis=1)
+                base = prev["df"].set_axis(range(prev["df"].shape[1]), axis=1)
+                merged = pd.concat([base, cont], ignore_index=True)
+                merged.columns = prev["df"].columns
+            else:
+                # width differs by ≤2 (one fragment lost a separator column):
+                # align on column names so no column is silently dropped
+                cont = it["df"].copy()
+                cont.columns = prev["df"].columns[:cont.shape[1]]
+                merged = pd.concat([prev["df"], cont], ignore_index=True)
+            prev["df"] = merged
             prev["pages"].append(it["page"])
 
             if not prev["name"] and it["name"]:

@@ -511,6 +511,55 @@ def guard_header_recovery_gate():
     check("no data row -> skip", _header_is_missing(no_data) is False)
 
 
+def guard_side_by_side_split():
+    """Guard Q — split_side_by_side separates two side-by-side independent data
+    tables but never touches an ordinary wide table or a misaligned single one.
+
+    FR375 prints two narrow tables next to each other; camelot returns one wide
+    frame whose right-panel rows have an empty label column (orphans). The split
+    must fire ONLY when both halves carry numeric data in mutually-exclusive rows
+    — otherwise it would corrupt wide tables (RBI) and wrapped-label ones (DARPG).
+    """
+    print("Guard Q — side-by-side panel split (split_side_by_side)")
+    import pandas as pd
+    from backend.app.cleaning.panel_splitter import split_side_by_side
+
+    # (1) two independent panels, numbers on both sides, exclusive rows -> SPLIT
+    two_panel = pd.DataFrame(
+        [["Result", "Urban", "Rural", "Total", "", "", "", ""]]
+        + [[f"Row{i}", str(i), str(i * 2), str(i * 3), "", "", "", ""] for i in range(1, 9)]
+        + [["", "", "", "", f"State{i}", str(i), str(2000 + i), str(i)] for i in range(1, 9)]
+    )
+    parts = split_side_by_side(two_panel)
+    check("two-panel frame splits into 2", len(parts) == 2,
+          f"got {len(parts)} panels, shapes {[p.shape for p in parts]}")
+    if len(parts) == 2:
+        check("left panel keeps its label column",
+              all(str(parts[0].iloc[r, 0]).strip() for r in range(2, len(parts[0]))),
+              f"left col0: {parts[0].iloc[:,0].tolist()}")
+        check("right panel keeps its label column",
+              all(str(parts[1].iloc[r, 0]).strip() for r in range(2, len(parts[1]))),
+              f"right col0: {parts[1].iloc[:,0].tolist()}")
+
+    # (2) ordinary wide table (rows span the full width) -> NOT split
+    wide = pd.DataFrame(
+        [["Year", "A", "B", "C", "D", "E"]]
+        + [[str(2000 + i), str(i), str(i + 1), str(i + 2), str(i + 3), str(i + 4)]
+           for i in range(1, 12)]
+    )
+    check("ordinary wide table kept whole", len(split_side_by_side(wide)) == 1,
+          f"got {len(split_side_by_side(wide))}")
+
+    # (3) misaligned single table: left side text-only (no numbers) -> NOT split
+    misaligned = pd.DataFrame(
+        [["Note text here", "", "Ministry of X", "", "1", "2", "3", "4"]
+         for _ in range(10)]
+    )
+    check("text-only-left misalignment kept whole",
+          len(split_side_by_side(misaligned)) == 1,
+          f"got {len(split_side_by_side(misaligned))}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -520,7 +569,7 @@ if __name__ == "__main__":
                    guard_rbi_payment_system, guard_rbi_money_stock, guard_rbi_multipage_stitch,
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
-                   guard_header_recovery_gate)
+                   guard_header_recovery_gate, guard_side_by_side_split)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

@@ -80,6 +80,110 @@ def _parse_entry(entry):
     return {"sl": "", "name": entry, "value": ""}
 
 
+# ── side-by-side independent panels ───────────────────────────────────────────
+#
+# A different layout from the merged-cell panels above: government reports often
+# print two *separate* narrow tables next to each other on one page (e.g. NFHS
+# FR375 prints a small "Result | Urban | Rural | Total" summary on the left and a
+# wide "State | Month | Year | …" fieldwork table on the right). Camelot extracts
+# them as ONE wide frame, so every right-panel row has an empty label column and
+# is counted as an "orphan". Detecting the boundary and emitting two tables
+# restores each panel's own label column and removes the orphans.
+
+_NUMERIC_CELL = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+
+
+def _populated(c):
+    c = str(c).strip()
+    return bool(c) and c.lower() not in ("nan", "none")
+
+
+def _is_numeric(c):
+    return bool(_NUMERIC_CELL.match(str(c).strip()))
+
+
+def _panel_boundary(df, min_rows=8, frac=0.22, min_numrows=5):
+    """
+    Column index k that splits df into two side-by-side INDEPENDENT data tables,
+    or None.
+
+    Two conditions, both required, keep this from firing on ordinary wide tables
+    or on misaligned single tables:
+      (1) many data rows populate ONLY the left columns [0:k] xor ONLY the right
+          columns [k:] — two different row structures means two tables, whereas
+          one wide table fills cells across the boundary together; and
+      (2) BOTH halves carry numeric data — rules out a single table whose wrapped
+          text labels/serials drift into the left columns (DARPG) and prose pages
+          that camelot mistakes for a grid (no numbers on either side).
+    """
+    ncols = df.shape[1]
+    if ncols < 4:
+        return None
+
+    cells = df.values.tolist()
+    pop = [[_populated(v) for v in row] for row in cells]
+
+    best = None
+    for k in range(2, ncols - 1):
+        if ncols - k < 2:
+            continue
+
+        lo = ro = n = 0
+        for r in pop:
+            left = any(r[:k])
+            right = any(r[k:])
+            if not (left or right):
+                continue
+            n += 1
+            if left and not right:
+                lo += 1
+            elif right and not left:
+                ro += 1
+
+        if n < min_rows:
+            continue
+
+        lof, rof = lo / n, ro / n
+        if not (lof >= frac and rof >= frac and (lo + ro) >= 0.55 * n):
+            continue
+
+        lnum = sum(1 for row in cells if any(_is_numeric(row[j]) for j in range(k)))
+        rnum = sum(1 for row in cells if any(_is_numeric(row[j]) for j in range(k, ncols)))
+        if lnum < min_numrows or rnum < min_numrows:
+            continue
+
+        score = min(lof, rof)
+        if best is None or score > best[1]:
+            best = (k, score)
+
+    return best[0] if best else None
+
+
+def split_side_by_side(df):
+    """
+    If df is two side-by-side independent tables, return [left_df, right_df];
+    otherwise return [df]. Each panel keeps only its own non-empty rows and is
+    re-indexed with fresh integer columns so the downstream header pipeline
+    treats it as a standalone table.
+    """
+    if df is None or df.empty or df.shape[1] < 4:
+        return [df]
+
+    k = _panel_boundary(df)
+    if k is None:
+        return [df]
+
+    out = []
+    for panel in (df.iloc[:, :k], df.iloc[:, k:]):
+        mask = panel.apply(lambda r: any(_populated(v) for v in r), axis=1)
+        panel = panel[mask].reset_index(drop=True)
+        if len(panel) >= 2:
+            panel.columns = list(range(panel.shape[1]))
+            out.append(panel)
+
+    return out if len(out) >= 2 else [df]
+
+
 def split_panels(df):
     """
     If the dataframe looks like a two-panel table, flatten it to one row per

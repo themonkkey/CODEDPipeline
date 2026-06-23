@@ -542,6 +542,22 @@ def extract_tables(pdf_path):
                     "flavor": "stream",
                 })
 
+    # Expand side-by-side independent tables (two narrow tables printed next to
+    # each other, extracted as one wide frame) into separate tables. Done here,
+    # before table_ids are assigned, so every sub-table gets a unique sequential
+    # id and nothing downstream needs to change.
+    from backend.app.cleaning.panel_splitter import split_side_by_side
+
+    expanded = []
+    for t in kept:
+        panels = split_side_by_side(t["dataframe"])
+        if len(panels) == 1:
+            expanded.append(t)
+        else:
+            for panel in panels:
+                expanded.append({**t, "dataframe": panel})
+    kept = expanded
+
     kept.sort(key=lambda t: t["page"])
 
     results = []

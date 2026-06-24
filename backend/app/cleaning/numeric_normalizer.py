@@ -22,8 +22,8 @@ import re
 import pandas as pd
 
 # a single formatted numeric value:
-#   45,544   3348245*   (7.5)   12.3%   -45   1.2†   1,234.5‡
-_NUMERIC_CELL = re.compile(r"^[(\-+]?\s*[\d,]+(\.\d+)?\s*[)%*†§¶#‡]?$")
+#   45,544   3348245*   (7.5)   12.3%   -45   1.2†   1,234.5‡   −5 (unicode minus)
+_NUMERIC_CELL = re.compile(r"^[(\-+−]?\s*[\d,]+(\.\d+)?\s*[)%*†§¶#‡]?$")
 
 # two or more numbers in one cell — a merged / continuation value that must NOT
 # be coerced to NaN ("16411581 (15878397)", "10 20 30")
@@ -49,6 +49,9 @@ def _to_number(cell):
     s = str(cell).strip()
     if s.lower() in _PLACEHOLDERS:
         return None
+    # unicode minus / en-dash used as a leading sign -> ascii hyphen
+    if s[:1] in ("−", "–"):
+        s = "-" + s[1:]
     negative = s.startswith("(") and s.rstrip(_FOOTNOTE_MARKERS).endswith(")")
     s = s.strip("()").strip()
     s = s.rstrip(_FOOTNOTE_MARKERS).strip()

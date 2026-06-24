@@ -588,6 +588,43 @@ def guard_side_by_side_split():
           f"got {len(split_side_by_side(misaligned))}")
 
 
+def guard_numeric_readiness_metric():
+    """Guard Y — unicode-minus parsing + the honest numeric-readiness metric.
+
+    (a) numbers written with a unicode minus (−) or en-dash sign must parse, not
+        drop to NaN. (b) numeric readiness must be scored over INTENDED-numeric
+        columns only — a clean table of [text dimension | numbers | numbers]
+        reads ~1.0, not dragged down by its legitimate text column (the flaw that
+        made the old numeric_value_frac understate the dimension)."""
+    print("Guard Y — unicode-minus + honest numeric readiness")
+    import pandas as pd
+    from backend.app.cleaning.numeric_normalizer import _to_number, normalize_numeric_columns
+    from backend.tools.measure_quality import measure_table
+
+    check("unicode minus parses", _to_number("−5") == -5, f"got {_to_number(chr(0x2212)+'5')}")
+    check("en-dash sign parses", _to_number("–7.5") == -7.5, f"got {_to_number(chr(0x2013)+'7.5')}")
+    col = ["−5", "10", "20", "-"]
+    out = normalize_numeric_columns(pd.DataFrame({"v": col}))
+    check("unicode-minus column casts", list(out["v"]) == [-5, 10, 20, None], f"got {list(out['v'])}")
+
+    # honest readiness: text dim col must not drag a clean numeric table down
+    clean = normalize_numeric_columns(pd.DataFrame([
+        ["Andhra Pradesh", "10", "20"], ["Bihar", "11", "21"], ["Goa", "12", "22"],
+    ], columns=["state", "rural", "urban"]))
+    m = measure_table(clean, "T")
+    check("clean numeric table readiness ~1.0", m["numeric_readiness"] == 1.0,
+          f"got {m['numeric_readiness']} (value_frac {m['numeric_value_frac']})")
+    check("intended numeric cols counted", m["intended_numeric_cols"] == 2,
+          f"got {m['intended_numeric_cols']}")
+    # poisoned numeric column drags readiness below 1
+    poisoned = normalize_numeric_columns(pd.DataFrame([
+        ["AP", "10", "x"], ["Bihar", "11", "y"], ["Goa", "12", "13"], ["MP", "14", "15"],
+    ], columns=["state", "good", "poison"]))
+    mp = measure_table(poisoned, "T")
+    check("poisoned column lowers readiness", mp["numeric_readiness"] < 1.0,
+          f"got {mp['numeric_readiness']}")
+
+
 def guard_column_dedupe():
     """Guard W — duplicate column names are made unique (pandas/SQL-safe) without
     disturbing already-unique schemas.
@@ -950,9 +987,9 @@ if __name__ == "__main__":
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
                    guard_column_dedupe, guard_phantom_value_columns,
-                   guard_section_lift, guard_multilevel_header_merge,
-                   guard_workbook_toc, guard_numeric_normalization,
-                   guard_ghost_suppression)
+                   guard_numeric_readiness_metric, guard_section_lift,
+                   guard_multilevel_header_merge, guard_workbook_toc,
+                   guard_numeric_normalization, guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

@@ -87,17 +87,7 @@ def _is_frontmatter(df):
 # a cell holding only small column-index tokens: "1", "(2)", "1 2 3"
 _INDEX_TOKEN = re.compile(r"^\(?\d{1,2}\)?$")
 
-# Devanagari block — survives into output only when the source was an
-# un-translatable Hindi/mojibake table (per-glyph font corruption)
-_DEVANAGARI = re.compile(r"[ऀ-ॿ]")
-
-
-def _devanagari_fraction(sdf):
-    """Fraction of populated cells that still carry Devanagari script."""
-    cells = [c for c in sdf.values.flatten() if c.strip() not in ("", "nan", "None")]
-    if not cells:
-        return 0.0
-    return sum(1 for c in cells if _DEVANAGARI.search(c)) / len(cells)
+from backend.app.translation.corruption import corruption_score
 
 
 def _is_index_legend_row(cells):
@@ -195,14 +185,14 @@ def validate_table(df):
             "reason": "index_legend_only"
         }
 
-    # garbled-source table: a large share of cells still carry Devanagari —
-    # the source was an un-translatable Hindi / mojibake table (per-glyph font
-    # corruption). Quarantine it instead of shipping corrupt data as clean; a
-    # stray untranslated name (a few cells) does NOT trip this.
-    if _devanagari_fraction(sdf) > 0.4:
+    # garbled-source table: a large share of cells are still font-corrupt
+    # (Devanagari OR Kruti-Dev soup) — un-translatable Hindi that OCR recovery
+    # could not rescue. Quarantine it instead of shipping corrupt data as clean;
+    # a stray untranslated name (a few cells) does NOT trip this.
+    if corruption_score(df)[0] > 0.4:
         return {
             "passed": False,
-            "reason": "garbled_devanagari"
+            "reason": "garbled_source"
         }
 
     # phantom tables (charts parsed as tables) are almost entirely blank

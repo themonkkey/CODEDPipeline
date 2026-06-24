@@ -148,12 +148,15 @@ def run(pdf, out_path, max_pages=40):
 
     failed = {}
     passed = []
+    ocr_recovered = 0
     try:
         tables = extract_tables(tmp.name)
     except Exception as e:
         tables = []
         failed[f"extract:{type(e).__name__}"] = failed.get(f"extract:{type(e).__name__}", 0) + 1
     for t in tables:
+        if t.get("flavor") == "ocr":
+            ocr_recovered += 1
         try:
             df = clean_dataframe(t["dataframe"])
             df = split_panels(df)
@@ -188,6 +191,7 @@ def run(pdf, out_path, max_pages=40):
         "tables_passed": len(tabs),
         "failed_reasons": failed,
         "ghosts_dropped": failed.get("index_legend_only", 0),
+        "ocr_recovered": ocr_recovered,
         # structural quality
         "avg_col_n_frac": round(sum(t["col_n_frac"] for t in tabs) / n, 3),
         "tables_clean_cols": sum(1 for t in tabs if t["col_n"] == 0),

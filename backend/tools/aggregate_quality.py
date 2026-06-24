@@ -15,12 +15,14 @@ def main(indir, out=None):
     per_pdf = []
     all_tables = []
     failed_reasons = {}
+    ocr_recovered_total = 0
     for f in sorted(files):
         with open(f) as fh:
             d = json.load(fh)
         if d.get("error"):
             per_pdf.append({"pdf": d["pdf"], "error": d["error"]})
             continue
+        ocr_recovered_total += d.get("ocr_recovered", 0)
         for k, v in (d.get("failed_reasons") or {}).items():
             failed_reasons[k] = failed_reasons.get(k, 0) + v
         all_tables.extend(d.get("tables", []))
@@ -40,6 +42,8 @@ def main(indir, out=None):
         "total_tables": len(all_tables),
         "failed_reasons": failed_reasons,
         "ghosts_dropped_total": sum(v for k, v in failed_reasons.items() if k == "index_legend_only"),
+        "garbled_quarantined_total": sum(v for k, v in failed_reasons.items() if k == "garbled_source"),
+        "ocr_recovered_total": ocr_recovered_total,
         # ---- structural / columns
         "tables_zero_coln_frac": frac(lambda t: t["col_n"] == 0),
         "mean_col_n_frac": round(sum(t["col_n_frac"] for t in all_tables) / T, 3),

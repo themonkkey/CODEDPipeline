@@ -498,6 +498,49 @@ def _recover_stream_header(table, df, plumber_pdf):
         return df
 
 
+_COL_N = re.compile(r"^col(_\d+)?$")
+
+
+def _named_col_frac(df):
+    """Fraction of column names that are meaningful (not auto-generated col_N)."""
+    cols = [str(c) for c in df.columns]
+    if not cols:
+        return 0.0
+    named = sum(1 for c in cols if not _COL_N.fullmatch(c))
+    return named / len(cols)
+
+
+def _ocr_recover_if_corrupt(table, df, plumber_pdf):
+    """When a table's text layer is font-corrupted (Kruti soup / mangled
+    Devanagari), rebuild it by OCR-ing the rendered glyphs. Returns
+    (dataframe, recovered?). Best-effort: any failure keeps the original df."""
+    if plumber_pdf is None:
+        return df, False
+    try:
+        from backend.app.translation.corruption import corruption_score
+        before, _ = corruption_score(df)
+        if before < 0.3:
+            return df, False
+        # Skip OCR when column structure is already well-formed English:
+        # bilingual tables (Hindi values but English-named columns) would get
+        # their clean column names overwritten with transliterated Hindi.
+        if _named_col_frac(df) > 0.5:
+            return df, False
+        from backend.app.extract.ocr_recovery import recover_table
+        import pandas as pd
+        page = plumber_pdf.pages[int(table.page) - 1]
+        grid = recover_table(page, table)
+        if not grid:
+            return df, False
+        rdf = pd.DataFrame(grid)
+        after, _ = corruption_score(rdf)
+        if after < before:
+            return rdf, True
+    except Exception:
+        pass
+    return df, False
+
+
 def extract_tables(pdf_path):
     import os
     _check_pdf_magic(pdf_path)
@@ -535,11 +578,13 @@ def extract_tables(pdf_path):
 
         good_lattice_pages.add(page)
         df = _repair_header_positionally(table, plumber_pdf)
+        df = _repair_crushed_header_rows(df)
+        df, ocr = _ocr_recover_if_corrupt(table, df, plumber_pdf)
         kept.append({
             "page": page,
-            "dataframe": _repair_crushed_header_rows(df),
+            "dataframe": df,
             "bbox": getattr(table, "_bbox", None),
-            "flavor": "lattice",
+            "flavor": "ocr" if ocr else "lattice",
         })
 
     # Stream fallback: pages where lattice found nothing usable
@@ -580,12 +625,13 @@ def extract_tables(pdf_path):
                 # rows are empty (only a "1 2 3" index band survives), read the
                 # column labels positionally from pdfplumber and prepend them.
                 df = _recover_stream_header(table, df, plumber_pdf)
+                df, ocr = _ocr_recover_if_corrupt(table, df, plumber_pdf)
 
                 kept.append({
                     "page": page,
                     "dataframe": df,
                     "bbox": getattr(table, "_bbox", None),
-                    "flavor": "stream",
+                    "flavor": "ocr" if ocr else "stream",
                 })
 
     # Expand side-by-side independent tables (two narrow tables printed next to

@@ -740,38 +740,120 @@ def guard_title_and_composite_metric():
           and not _is_composite("s_no"))
 
 
-def guard_mojibake_quarantine():
-    """Guard AB — tables that are mostly un-translated Devanagari are quarantined
-    (routed to failed), not shipped as clean; English tables with a stray Hindi
-    name still pass.
+def guard_corruption_quarantine():
+    """Guard AB — tables still font-corrupt after OCR (Devanagari OR Kruti soup)
+    are quarantined (reason garbled_source), not shipped as clean; an English
+    table with one stray Hindi token still passes.
 
-    Hindi mojibake (per-glyph font corruption) cannot be fixed rule-based, but
-    shipping it as clean data poisons the corpus. validate_table rejects a table
-    only when a LARGE share (>40%) of cells carry Devanagari."""
-    print("Guard AB — mojibake / Devanagari quarantine (validate_table)")
+    The quarantine now covers BOTH corruption kinds via the shared corruption
+    detector, and only fires when a LARGE share (>40%) of cells are corrupt."""
+    print("Guard AB — corruption quarantine, deva + kruti (validate_table)")
     import pandas as pd
-    from backend.app.validation.table_validator import validate_table, _devanagari_fraction
+    from backend.app.validation.table_validator import validate_table
 
-    garbled = pd.DataFrame([
-        ["कुल", "जनसंख्या", "साक्षरता"],
-        ["राज्य", "१००", "७५"],
-        ["जिला", "२००", "८०"],
+    deva = pd.DataFrame([
+        ["कुल", "जनसंख्या", "साक्षरता"], ["राज्य", "१००", "७५"], ["जिला", "२००", "८०"],
     ], columns=["क्षेत्र", "मान", "दर"])
-    r = validate_table(garbled)
+    r = validate_table(deva)
     check("mostly-Devanagari table quarantined",
-          not r["passed"] and r["reason"] == "garbled_devanagari", f"got {r}")
+          not r["passed"] and r["reason"] == "garbled_source", f"got {r}")
 
-    # English table with ONE stray Hindi token still passes
+    kruti = pd.DataFrame([
+        ["';ksiqj", "eqjSuk", "fHk.M"], ["Xokfy;j", "nfr;k", "f'koiqjh"],
+        ["xquk", "v'kksduxj", "Vhdex<+"],
+    ], columns=["ftyk", "o\"kz", ";ksx"])
+    rk = validate_table(kruti)
+    check("mostly-Kruti-soup table quarantined",
+          not rk["passed"] and rk["reason"] == "garbled_source", f"got {rk}")
+
     mostly_english = pd.DataFrame([
-        ["Andhra Pradesh", "4870", "6782"],
-        ["बिहार", "3773", "6459"],
-        ["Goa", "6996", "9000"],
-        ["Kerala", "5000", "7000"],
+        ["Andhra Pradesh", "4870", "6782"], ["बिहार", "3773", "6459"],
+        ["Goa", "6996", "9000"], ["Kerala", "5000", "7000"],
     ], columns=["state", "rural", "urban"])
     check("stray Hindi name still passes", validate_table(mostly_english)["passed"],
           f"got {validate_table(mostly_english)}")
-    check("devanagari fraction measured",
-          _devanagari_fraction(mostly_english.astype(str)) < 0.4)
+
+
+def guard_corruption_detector():
+    """Guard AF — the shared corruption detector flags Devanagari + Kruti soup,
+    ignores numeric cells, and clears clean English."""
+    print("Guard AF — corruption detector (corruption.py)")
+    import pandas as pd
+    from backend.app.translation.corruption import corruption_score, is_corrupt
+
+    deva = pd.DataFrame([["राज्य", "१००"], ["जिला", "२००"]])
+    check("Devanagari flagged", is_corrupt(deva)[0] and corruption_score(deva)[1] == "deva")
+    kruti = pd.DataFrame([["';ksiqj", "eqjSuk"], ["Xokfy;j", "nfr;k"]])
+    check("Kruti soup flagged", is_corrupt(kruti)[0] and corruption_score(kruti)[1] == "kruti")
+    clean = pd.DataFrame([["Andhra Pradesh", "4870"], ["Bihar", "3773"]])
+    check("clean English not flagged", not is_corrupt(clean)[0])
+    numeric = pd.DataFrame([["1", "2", "3"], ["4", "5", "6"]])
+    check("all-numeric not flagged", not is_corrupt(numeric)[0])
+    # a numbers-heavy table with one stray corrupt label scores low
+    mixed = pd.DataFrame([["राज्य", "10", "20", "30", "40"], ["x", "11", "21", "31", "41"]])
+    check("numbers-heavy table scores low", corruption_score(mixed)[0] < 0.4,
+          f"got {corruption_score(mixed)[0]}")
+
+
+def guard_transliteration():
+    """Guard AG — Devanagari transliterates to readable ASCII Latin (no Devanagari
+    survives); Latin/numeric text passes through unchanged."""
+    print("Guard AG — Devanagari->Latin transliteration (ocr_recovery)")
+    import re
+    from backend.app.extract.ocr_recovery import transliterate
+    DEVA = re.compile(r"[ऀ-ॿ]")
+    out = transliterate("मध्य प्रदेश")
+    check("Devanagari -> Latin", not DEVA.search(out) and out.strip() != "", f"got {out}")
+    check("contains plausible latin", bool(re.search(r"[a-z]", out)), f"got {out}")
+    check("Latin passes through", transliterate("Madhya Pradesh") == "Madhya Pradesh")
+    check("digits transliterate", transliterate("२०२३") == "2023", f"got {transliterate('२०२३')}")
+
+
+def guard_ocr_recovery():
+    """Guard AH — OCR rebuilds a real font-corrupt table into non-corrupt text
+    with the grid preserved. Skips cleanly when Tesseract is unavailable."""
+    print("Guard AH — OCR recovery on real corrupt table (economic_survey_hindi)")
+    from backend.app.extract.ocr_recovery import tesseract_available, recover_table
+    if not tesseract_available():
+        check("tesseract present (skip if not)", True, "tesseract missing — skipped")
+        return
+    import warnings as _w; _w.filterwarnings("ignore")
+    import pdfplumber, camelot, pandas as pd
+    from backend.app.translation.corruption import corruption_score
+    pdf = os.path.join(ROOT, "Testpdfs/new_batch/economic_survey_2024-25_hindi.pdf")
+    plumber = pdfplumber.open(pdf)
+    recovered = None
+    for t in camelot.read_pdf(pdf, pages="1-8", flavor="stream"):
+        if corruption_score(t.df)[0] >= 0.3 and t.df.shape[0] >= 4:
+            grid = recover_table(plumber.pages[int(t.page) - 1], t)
+            if grid:
+                before = corruption_score(t.df)[0]
+                after = corruption_score(pd.DataFrame(grid))[0]
+                recovered = (before, after, t.df.shape, len(grid))
+                break
+    plumber.close()
+    check("found & recovered a corrupt table", recovered is not None,
+          "no corrupt table recovered in pp1-8")
+    if recovered:
+        before, after, shape, nrows = recovered
+        check("corruption dropped after OCR", after < before and after < 0.3,
+              f"before={before:.2f} after={after:.2f}")
+        check("row count roughly preserved", abs(nrows - shape[0]) <= 3,
+              f"orig rows={shape[0]} recovered={nrows}")
+
+
+def guard_ghost_on_census():
+    """Guard AJ — ghost suppression positively verified on a DEEP census slice
+    where single-row '1 2 3' index-legend fragments actually appear (the
+    first-40-page sample never reached them)."""
+    print("Guard AJ — ghost suppression on deep census slice")
+    census = os.path.join(ROOT, "Testpdfs/new_batch/census_2011_garhwal.pdf")
+    path = _slice(census, 50, 62)
+    items = _pipeline(path)
+    os.unlink(path)
+    legends = sum(1 for i in items if i["reason"] == "index_legend_only")
+    check(">=1 index-legend ghost dropped in deep census slice", legends >= 1,
+          f"got {legends}; reasons={set(i['reason'] for i in items)}")
 
 
 def guard_descriptive_title():
@@ -1171,7 +1253,9 @@ if __name__ == "__main__":
                    guard_header_recovery_gate, guard_side_by_side_split,
                    guard_section_heading_detection,
                    guard_continuation_title_inheritance,
-                   guard_title_and_composite_metric, guard_mojibake_quarantine,
+                   guard_title_and_composite_metric, guard_corruption_quarantine,
+                   guard_corruption_detector, guard_transliteration,
+                   guard_ocr_recovery, guard_ghost_on_census,
                    guard_descriptive_title,
                    guard_column_dedupe, guard_phantom_value_columns,
                    guard_numeric_readiness_metric, guard_thin_subheader,

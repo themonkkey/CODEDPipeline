@@ -498,18 +498,6 @@ def _recover_stream_header(table, df, plumber_pdf):
         return df
 
 
-_COL_N = re.compile(r"^col(_\d+)?$")
-
-
-def _named_col_frac(df):
-    """Fraction of column names that are meaningful (not auto-generated col_N)."""
-    cols = [str(c) for c in df.columns]
-    if not cols:
-        return 0.0
-    named = sum(1 for c in cols if not _COL_N.fullmatch(c))
-    return named / len(cols)
-
-
 def _ocr_recover_if_corrupt(table, df, plumber_pdf):
     """When a table's text layer is font-corrupted (Kruti soup / mangled
     Devanagari), rebuild it by OCR-ing the rendered glyphs. Returns
@@ -518,13 +506,14 @@ def _ocr_recover_if_corrupt(table, df, plumber_pdf):
         return df, False
     try:
         from backend.app.translation.corruption import corruption_score
-        before, _ = corruption_score(df)
+        before, kind = corruption_score(df)
         if before < 0.3:
             return df, False
-        # Skip OCR when column structure is already well-formed English:
-        # bilingual tables (Hindi values but English-named columns) would get
-        # their clean column names overwritten with transliterated Hindi.
-        if _named_col_frac(df) > 0.5:
+        # Unicode Devanagari (kind="deva") is handled by translate_dataframe;
+        # only Kruti-Dev ASCII soup (kind="kruti") cannot be translated and
+        # genuinely needs OCR. Bilingual tables with Devanagari row labels
+        # (e.g. PLFS) have kind="deva" and must NOT be OCR'd.
+        if kind != "kruti":
             return df, False
         from backend.app.extract.ocr_recovery import recover_table
         import pandas as pd

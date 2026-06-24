@@ -248,7 +248,11 @@ def _is_subheader_row(cells, ncols):
     ['', 'Rural', 'Urban', '', 'Rural', 'Urban', ''] sitting on top of the data.
     They carry subdivision vocabulary, compact labels, and NO numeric value."""
     ne = [c for c in cells if c and c not in ("nan", "None")]
-    if len(ne) < max(3, ncols // 2):
+    # at least two labels; tolerate THIN sub-headers (a metric spanning only a
+    # couple of columns, e.g. HCES Table 3) — the numeric-below + no-value +
+    # subdivision-vocab gates below are what actually guard against false
+    # positives, so the cell-count floor can be permissive.
+    if len(ne) < max(2, ncols // 4):
         return False
     if any(_NUM_VALUE.match(c) for c in ne):
         return False                       # a real value -> this is data

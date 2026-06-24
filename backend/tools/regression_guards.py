@@ -588,6 +588,41 @@ def guard_side_by_side_split():
           f"got {len(split_side_by_side(misaligned))}")
 
 
+def guard_thin_subheader():
+    """Guard Z — a THIN sub-header (metric label spanning only a couple of
+    columns) still merges, while a genuine sparse data row is left alone.
+
+    HCES Table 3 has a 5-col frame whose metric row labels just 2 columns
+    ('Average MPCE' in two of five), which the old max(3, ncols//2) floor
+    rejected. The relaxed floor + numeric-below/no-value/vocab gates must absorb
+    it into composite names without swallowing data."""
+    print("Guard Z — thin sub-header absorb (_is_subheader_row)")
+    import pandas as pd
+    from backend.app.cleaning.header_builder import _absorb_subheader_rows, _is_subheader_row
+
+    # thin metric row (2 of 5 labelled) over numeric data -> absorbed
+    d = pd.DataFrame([
+        ["", "Average MPCE", "", "Average MPCE", ""],
+        ["General", "4870", "39", "5327", "35"],
+        ["SC", "3384", "41", "3670", "38"],
+        ["ST", "3000", "30", "3200", "28"],
+    ], columns=["social_group", "2022_23", "2022_23", "2023_24", "2023_24"])
+    out = _absorb_subheader_rows(d)
+    cols = [str(c) for c in out.columns]
+    check("thin metric row absorbed (composite built)",
+          any("average_mpce" in c for c in cols), f"got {cols}")
+    check("data kept (3 rows, General=4870)",
+          len(out) == 3 and str(out.iloc[0, 1]).strip() == "4870",
+          f"shape={out.shape} row0={out.iloc[0].tolist()}")
+
+    # a genuine data row (carries numbers) is NOT a thin sub-header
+    check("data row with values not a sub-header",
+          not _is_subheader_row(["Rural", "4870", "", "", ""], 5))
+    # a lone text cell over numeric data is too thin even relaxed (1 < max(2,...))
+    check("single-label row not a sub-header",
+          not _is_subheader_row(["Total", "", "", "", "", "", "", ""], 8))
+
+
 def guard_numeric_readiness_metric():
     """Guard Y — unicode-minus parsing + the honest numeric-readiness metric.
 
@@ -987,9 +1022,10 @@ if __name__ == "__main__":
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
                    guard_column_dedupe, guard_phantom_value_columns,
-                   guard_numeric_readiness_metric, guard_section_lift,
-                   guard_multilevel_header_merge, guard_workbook_toc,
-                   guard_numeric_normalization, guard_ghost_suppression)
+                   guard_numeric_readiness_metric, guard_thin_subheader,
+                   guard_section_lift, guard_multilevel_header_merge,
+                   guard_workbook_toc, guard_numeric_normalization,
+                   guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

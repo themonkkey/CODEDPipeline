@@ -660,6 +660,40 @@ def guard_numeric_readiness_metric():
           f"got {mp['numeric_readiness']}")
 
 
+def guard_mojibake_quarantine():
+    """Guard AB — tables that are mostly un-translated Devanagari are quarantined
+    (routed to failed), not shipped as clean; English tables with a stray Hindi
+    name still pass.
+
+    Hindi mojibake (per-glyph font corruption) cannot be fixed rule-based, but
+    shipping it as clean data poisons the corpus. validate_table rejects a table
+    only when a LARGE share (>40%) of cells carry Devanagari."""
+    print("Guard AB — mojibake / Devanagari quarantine (validate_table)")
+    import pandas as pd
+    from backend.app.validation.table_validator import validate_table, _devanagari_fraction
+
+    garbled = pd.DataFrame([
+        ["कुल", "जनसंख्या", "साक्षरता"],
+        ["राज्य", "१००", "७५"],
+        ["जिला", "२००", "८०"],
+    ], columns=["क्षेत्र", "मान", "दर"])
+    r = validate_table(garbled)
+    check("mostly-Devanagari table quarantined",
+          not r["passed"] and r["reason"] == "garbled_devanagari", f"got {r}")
+
+    # English table with ONE stray Hindi token still passes
+    mostly_english = pd.DataFrame([
+        ["Andhra Pradesh", "4870", "6782"],
+        ["बिहार", "3773", "6459"],
+        ["Goa", "6996", "9000"],
+        ["Kerala", "5000", "7000"],
+    ], columns=["state", "rural", "urban"])
+    check("stray Hindi name still passes", validate_table(mostly_english)["passed"],
+          f"got {validate_table(mostly_english)}")
+    check("devanagari fraction measured",
+          _devanagari_fraction(mostly_english.astype(str)) < 0.4)
+
+
 def guard_descriptive_title():
     """Guard AA — descriptive (non-'Table N') headings above a table are captured
     as titles, while body prose and 'Table N' lines behave as before.
@@ -1055,11 +1089,12 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_descriptive_title, guard_column_dedupe,
-                   guard_phantom_value_columns, guard_numeric_readiness_metric,
-                   guard_thin_subheader, guard_section_lift,
-                   guard_multilevel_header_merge, guard_workbook_toc,
-                   guard_numeric_normalization, guard_ghost_suppression)
+                   guard_mojibake_quarantine, guard_descriptive_title,
+                   guard_column_dedupe, guard_phantom_value_columns,
+                   guard_numeric_readiness_metric, guard_thin_subheader,
+                   guard_section_lift, guard_multilevel_header_merge,
+                   guard_workbook_toc, guard_numeric_normalization,
+                   guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

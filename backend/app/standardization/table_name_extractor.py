@@ -169,16 +169,25 @@ def extract_table_name(df, header_rows, caption=None):
     #    ("Distribution of households by source of lighting and fuel") survive.
     if caption:
 
-        for line in str(caption).splitlines():
+        for raw_line in str(caption).splitlines():
 
-            line = line.strip()
+            line = raw_line.strip()
+            # Strip a leading title-prefix label that carries no parseable number
+            # ("Table: Recurring …", "Chapter-2C Kidnapping & Abduction …",
+            # "Figure 3:") so the descriptive remainder becomes the title; the
+            # numbered "Table X.Y" case is already handled above.
+            line = re.sub(
+                r"^(table|tabel|statement|annexure|appendix|chapter|figure)\b"
+                r"[\s\-]*(no\.?)?[\s\-]*(\d+[A-Za-z]?(\.\d+)*)?[\s:.\-]+",
+                "", line, flags=re.IGNORECASE,
+            ).strip() or line
             cleaned = _clean_title_words(line, limit=16)
             n_words = len(cleaned.split())
 
             if (
                 2 <= n_words <= 16
-                and not re.search(r"[.;:]\s|\.$", line)
-                and len(cleaned) >= 0.6 * len(line)
+                and not re.search(r"[.;]\s|[.;]$|\.$", line)
+                and len(cleaned) >= 0.45 * len(line)
             ):
                 # Repair truncated NFHS state names ("ryana" → "Haryana")
                 if re.search(r"\bIndicators?\b", cleaned, re.IGNORECASE):

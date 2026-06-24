@@ -33,6 +33,21 @@ from backend.app.validation.table_validator import validate_table
 COL_N = re.compile(r"^col(_\d+)?$")
 NUM_STR = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
 YEAR = re.compile(r"20\d\d|19\d\d|\d{4}_\d{2}")
+# subdivision / group tokens that mark a genuine multi-level (group+sub) name
+_SUBLABEL = re.compile(
+    r"(^|_)(rural|urban|male|female|males|females|persons?|total|combined|"
+    r"value|volume|nfhs\d|cities|metropolitan|crude|imports?|exports?|"
+    r"production|cases|rate|rural_urban|\d{4}_\d{2})($|_)")
+
+
+def _is_composite(col):
+    """A column name encoding >=2 header levels: either >=3 underscore parts,
+    or >=2 parts with a recognised subdivision/group/year token. Excludes plain
+    two-word concept names ('ministry_department', 'crime_head')."""
+    parts = col.split("_")
+    if len(parts) >= 3:
+        return True
+    return len(parts) >= 2 and (bool(_SUBLABEL.search(col)) or bool(YEAR.search(col)))
 DEVA = re.compile(r"[ऀ-ॿ]")
 FALLBACK_NAME = re.compile(r"^Table\s+\d+\s+\(p\.")
 
@@ -48,8 +63,9 @@ def measure_table(df, name):
     col_n = sum(1 for c in cols if COL_N.fullmatch(c))
     dup = nc - len(set(cols))
     has_cat = any(c == "category" for c in cols)
-    # composite multi-level names: a year token plus another descriptor
-    composite = sum(1 for c in cols if YEAR.search(c) and len(c.split("_")) >= 2)
+    # composite multi-level names: a merged group+sub header (year, rural/urban,
+    # value/volume, >=3 parts …) — not just year-spans, which undercounted badly
+    composite = sum(1 for c in cols if _is_composite(c))
 
     # cell content over value columns (skip the first label column)
     val = df.iloc[:, 1:] if nc > 1 else df.iloc[:, :0]

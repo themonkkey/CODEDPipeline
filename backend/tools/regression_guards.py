@@ -660,6 +660,39 @@ def guard_numeric_readiness_metric():
           f"got {mp['numeric_readiness']}")
 
 
+def guard_title_and_composite_metric():
+    """Guard AC — title-prefix stripping recovers more titles, and the honest
+    composite metric counts genuine multi-level names (not just year-spans).
+
+    (titles) "Table: Recurring …" and "Chapter-2C Kidnapping …" were dropped
+    because clause-2b rejected the ': ' and the chapter prefix shrank the cleaned
+    length below the ratio. Stripping a numberless title-prefix recovers them.
+    (sub-headings) the old composite metric only counted YEAR composites, badly
+    undercounting 'abduction_metropolitan_cities' / 'nfhs6_urban'."""
+    print("Guard AC — title-prefix strip + honest composite metric")
+    from backend.app.standardization.table_name_extractor import extract_table_name
+    from backend.tools.measure_quality import _is_composite
+    import pandas as pd
+
+    df = pd.DataFrame([["1", "x"], ["2", "y"]], columns=["a", "b"])
+    t1 = extract_table_name(df, 0, "Table: Recurring High-Volume Ministry Category Pairs")
+    check("'Table: ...' (no number) titled", bool(t1) and "recurring" in str(t1).lower(),
+          f"got {t1}")
+    t2 = extract_table_name(df, 0, "Chapter-2C Kidnapping and Abduction (States UTs)")
+    check("'Chapter-2C ...' titled", bool(t2) and "kidnapping" in str(t2).lower(),
+          f"got {t2}")
+    # genuine prose still rejected
+    t3 = extract_table_name(df, 0, "however, any discrepancy observed in this report may be due to rounding.")
+    check("prose still rejected", t3 is None, f"got {t3}")
+
+    # honest composite: multi-level names count, plain 2-word concepts do not
+    check("group+sub counts", _is_composite("nfhs6_urban") and _is_composite("abduction_metropolitan_cities")
+          and _is_composite("average_mpce_rural_2022_23"))
+    check("plain 2-word concept excluded",
+          not _is_composite("ministry_department") and not _is_composite("crime_head")
+          and not _is_composite("s_no"))
+
+
 def guard_mojibake_quarantine():
     """Guard AB — tables that are mostly un-translated Devanagari are quarantined
     (routed to failed), not shipped as clean; English tables with a stray Hindi
@@ -1089,7 +1122,8 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_mojibake_quarantine, guard_descriptive_title,
+                   guard_title_and_composite_metric, guard_mojibake_quarantine,
+                   guard_descriptive_title,
                    guard_column_dedupe, guard_phantom_value_columns,
                    guard_numeric_readiness_metric, guard_thin_subheader,
                    guard_section_lift, guard_multilevel_header_merge,

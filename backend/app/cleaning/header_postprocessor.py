@@ -97,6 +97,27 @@ def clean_column_name(col):
     return "_".join(parts)
 
 
+_PHANTOM = re.compile(r"col(_\d+)?$")
+_NUM_CELL = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+
+
+_NUM_PLACEHOLDER = {"", "nan", "none", "-", "–", "—", "−", "n.a.", "na", "n/a",
+                    "nil", "..", "...", "*"}
+
+
+def _is_numeric_column(series):
+    """True when >=80% of a column's real (non-placeholder) cells are numeric.
+    Runs at clean_headers time, before numeric casting, so cells are strings;
+    dash/blank placeholders are ignored so a sparse numeric column still counts."""
+    judged = [
+        s for s in (str(v).strip() for v in series.tolist())
+        if s.lower() not in _NUM_PLACEHOLDER
+    ]
+    if not judged:
+        return False
+    return sum(1 for v in judged if _NUM_CELL.match(v)) / len(judged) >= 0.8
+
+
 def _dedupe_columns(columns):
     """Make column names unique so the table loads into pandas/SQL without
     silent value-coalescing.
@@ -130,6 +151,12 @@ def clean_headers(df):
         cleaned = clean_column_name(col)
         if cleaned is None:
             cleaned = f"col_{i}"
+        # A headerless but data-bearing value column ("col_3") is real data whose
+        # header was lost upstream — name it "value" so it is addressable instead
+        # of reading as extraction noise. Skip column 0 (the row-label/dimension
+        # column) and any column that is text (e.g. an unnamed label column).
+        if i > 0 and _PHANTOM.fullmatch(cleaned) and _is_numeric_column(df.iloc[:, i]):
+            cleaned = "value"
         new_cols.append(cleaned)
 
     df.columns = new_cols

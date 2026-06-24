@@ -625,6 +625,35 @@ def guard_column_dedupe():
     check("no data lost in dedupe", out.shape == (1, 5), f"got {out.shape}")
 
 
+def guard_phantom_value_columns():
+    """Guard X — headerless NUMERIC value columns become 'value' (addressable),
+    while unnamed text/label columns and column 0 stay untouched.
+
+    A col_N column carrying real numbers is data whose header was lost upstream;
+    naming it 'value' (deduped downstream to value/value_2/…) stops it reading as
+    extraction noise. A col_N column of text (an unnamed label column like RBI
+    Table 61's instrument names) must NOT be mislabelled 'value'."""
+    print("Guard X — phantom numeric value-column naming (clean_headers)")
+    import pandas as pd
+    from backend.app.cleaning.header_postprocessor import clean_headers, _is_numeric_column
+
+    check("numeric column detected", _is_numeric_column(pd.Series(["1", "2", "3", "-"])))
+    check("text column not numeric", not _is_numeric_column(pd.Series(["RTGS", "NEFT", "IMPS"])))
+
+    # numeric headerless value cols -> value / value_2 ; label col 0 kept; text col_N kept
+    df = pd.DataFrame(
+        [["North", "10", "20", "high"], ["South", "11", "21", "low"]],
+        columns=["region", "col_1", "col_2", "col_3"])
+    out = clean_headers(df)
+    cols = list(out.columns)
+    check("numeric col_N -> value*", sum(1 for c in cols if c.startswith("value")) == 2,
+          f"got {cols}")
+    check("text col_N kept unnamed (col)", any(re.fullmatch(r"col(_\d+)?", c) for c in cols),
+          f"got {cols}")
+    check("label column 0 untouched", cols[0] == "region", f"got {cols}")
+    check("all columns unique", len(set(cols)) == len(cols), f"got {cols}")
+
+
 def guard_section_lift():
     """Guard T — in-table section banners become a `category` column; ordinary
     tables are untouched.
@@ -920,9 +949,10 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_column_dedupe, guard_section_lift,
-                   guard_multilevel_header_merge, guard_workbook_toc,
-                   guard_numeric_normalization, guard_ghost_suppression)
+                   guard_column_dedupe, guard_phantom_value_columns,
+                   guard_section_lift, guard_multilevel_header_merge,
+                   guard_workbook_toc, guard_numeric_normalization,
+                   guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

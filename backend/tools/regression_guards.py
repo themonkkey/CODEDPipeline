@@ -1241,6 +1241,75 @@ def guard_ghost_suppression():
     check("normal table kept", validate_table(normal)["passed"])
 
 
+def guard_toc_prose_quarantine():
+    """Guard AK — TOC/index pages and prose paragraphs are quarantined, while
+    genuine data tables (even text-heavy ones) still pass."""
+    print("Guard AK — TOC / prose quarantine (validate_table)")
+    import pandas as pd
+    from backend.app.validation.table_validator import _is_toc, _is_prose, validate_table
+
+    # --- TOC: dotted leaders
+    toc_leader = pd.DataFrame([
+        ["3.1", "Basic Characteristics ................", "47"],
+        ["3.2", "Schooling and Literacy ..............", "49"],
+        ["3.3", "Wealth Index ........................", "52"],
+    ])
+    check("dotted-leader contents -> toc", _is_toc(toc_leader))
+
+    # --- TOC: Table No + Page No header
+    toc_header = pd.DataFrame([
+        ["Chapter & Table No.", "TITLE", "PAGE No."],
+        ["1A.10", "Place of Occurrence - wise Road Accident", "179"],
+        ["1A.11", "Time of Occurrence - wise Road Accident", "180"],
+    ])
+    check("Table-No+Page-No header -> toc", _is_toc(toc_header))
+
+    # --- TOC: INDEX header (district_indicatoe style)
+    toc_index = pd.DataFrame([
+        ["Table No.", "INDEX", "Page No."],
+        ["1", "Area and Population", "1"],
+        ["2", "Density", "3"],
+    ])
+    check("INDEX header -> toc", _is_toc(toc_index))
+
+    # --- prose paragraph mis-parsed as a table
+    prose = pd.DataFrame([
+        ["Since the publication caters to the broad needs of various users", ""],
+        ["the actual count of each crime head may differ from the figure shown", ""],
+        ["any discrepancy observed in this report may be brought to notice", ""],
+    ])
+    check("prose paragraph -> prose_text", _is_prose(prose))
+
+    # --- counter-examples: real tables must NOT be quarantined
+    real_numeric = pd.DataFrame(
+        [["Andhra Pradesh", "1,234", "5,678"], ["Bihar", "2,345", "6,789"],
+         ["Kerala", "3,456", "7,890"]],
+        columns=["state", "rural", "urban"])
+    check("real numeric table not toc", not _is_toc(real_numeric))
+    check("real numeric table not prose", not _is_prose(real_numeric))
+    check("real numeric table passes", validate_table(real_numeric)["passed"])
+
+    # text-heavy but real: long NFHS-style indicator names WITH numeric values
+    real_text_heavy = pd.DataFrame(
+        [["Children age 12-23 months fully vaccinated based on information", "76.4", "80.1"],
+         ["Mothers who had antenatal check-up in first trimester percent", "58.6", "70.2"],
+         ["Women age 15-49 who are anaemic according to the survey round", "57.0", "53.1"]],
+        columns=["indicator", "nfhs5", "nfhs6"])
+    check("text-heavy real table not prose", not _is_prose(real_text_heavy))
+    check("text-heavy real table passes", validate_table(real_text_heavy)["passed"])
+
+    # real PDF: district_indicatoe INDEX pages are quarantined (were col_N ghosts)
+    di = os.path.join(ROOT, "backend/data/uploads/district_indicatoe.pdf")
+    if os.path.exists(di):
+        path = _slice(di, 10, 12)
+        items = _pipeline(path)
+        os.unlink(path)
+        toc_passed = [i for i in items if i["passed"] and
+                      all(re.fullmatch(r"col(_\d+)?", str(c)) for c in i["df"].columns)]
+        check("district_indicatoe INDEX pages not shipped as col_N tables",
+              len(toc_passed) == 0, f"got {len(toc_passed)} col_N-only tables still passing")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -1261,7 +1330,7 @@ if __name__ == "__main__":
                    guard_numeric_readiness_metric, guard_thin_subheader,
                    guard_section_lift, guard_multilevel_header_merge,
                    guard_workbook_toc, guard_numeric_normalization,
-                   guard_ghost_suppression)
+                   guard_ghost_suppression, guard_toc_prose_quarantine)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

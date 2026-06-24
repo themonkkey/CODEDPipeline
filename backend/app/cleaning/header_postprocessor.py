@@ -97,6 +97,32 @@ def clean_column_name(col):
     return "_".join(parts)
 
 
+def _dedupe_columns(columns):
+    """Make column names unique so the table loads into pandas/SQL without
+    silent value-coalescing.
+
+    Repeated header blocks and side-by-side panels (e.g. an "average MPCE"
+    block printed once "with imputation" and once without, whose distinguishing
+    label camelot never captured) collapse to identical composite names. The
+    second and later occurrences get a numeric suffix — the same convention
+    pandas.read_csv uses — chosen so it never collides with an existing name."""
+    used = set()
+    out = []
+    for name in columns:
+        name = str(name)
+        if name not in used:
+            used.add(name)
+            out.append(name)
+            continue
+        k = 2
+        while f"{name}_{k}" in used:
+            k += 1
+        new = f"{name}_{k}"
+        used.add(new)
+        out.append(new)
+    return out
+
+
 def clean_headers(df):
 
     new_cols = []
@@ -121,5 +147,7 @@ def clean_headers(df):
                 df = df.drop(
                     columns=[possible_hindi_col]
                 )
+
+    df.columns = _dedupe_columns(df.columns)
 
     return df

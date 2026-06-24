@@ -588,6 +588,43 @@ def guard_side_by_side_split():
           f"got {len(split_side_by_side(misaligned))}")
 
 
+def guard_column_dedupe():
+    """Guard W — duplicate column names are made unique (pandas/SQL-safe) without
+    disturbing already-unique schemas.
+
+    Repeated header blocks / side-by-side panels collapse to identical composite
+    names (HCES Table 6 prints two 'average MPCE' blocks). _dedupe_columns must
+    suffix the 2nd+ occurrences with a non-colliding numeric tag, and leave any
+    table whose names are already unique exactly as-is (so the exact-schema
+    guards B/D/H/L/V stay valid)."""
+    print("Guard W — column-name dedupe (header_postprocessor)")
+    import pandas as pd
+    from backend.app.cleaning.header_postprocessor import _dedupe_columns, clean_headers
+
+    # plain duplicates -> suffixed
+    check("simple dup suffixed",
+          _dedupe_columns(["state", "mpce", "mpce"]) == ["state", "mpce", "mpce_2"],
+          f"got {_dedupe_columns(['state','mpce','mpce'])}")
+    # triple duplicate -> _2, _3
+    check("triple dup -> _2,_3",
+          _dedupe_columns(["a", "a", "a"]) == ["a", "a_2", "a_3"],
+          f"got {_dedupe_columns(['a','a','a'])}")
+    # generated suffix must not collide with an existing name -> stays unique
+    collide = _dedupe_columns(["x", "x", "x_2"])
+    check("suffix avoids existing collision (all unique)",
+          len(set(collide)) == 3 and collide[0] == "x", f"got {collide}")
+    # already-unique list untouched
+    uniq = ["s_no", "ministry_department", "grai_rank"]
+    check("unique list untouched", _dedupe_columns(uniq) == uniq)
+    # end-to-end through clean_headers: a frame with dup raw headers -> unique
+    df = pd.DataFrame([["AP", "1", "2", "3", "4"]],
+                      columns=["State", "Average MPCE", "Average MPCE", "Diff", "Diff"])
+    out = clean_headers(df)
+    cols = list(out.columns)
+    check("clean_headers yields unique columns", len(set(cols)) == len(cols), f"got {cols}")
+    check("no data lost in dedupe", out.shape == (1, 5), f"got {out.shape}")
+
+
 def guard_section_lift():
     """Guard T — in-table section banners become a `category` column; ordinary
     tables are untouched.
@@ -883,9 +920,9 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_section_lift, guard_multilevel_header_merge,
-                   guard_workbook_toc, guard_numeric_normalization,
-                   guard_ghost_suppression)
+                   guard_column_dedupe, guard_section_lift,
+                   guard_multilevel_header_merge, guard_workbook_toc,
+                   guard_numeric_normalization, guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

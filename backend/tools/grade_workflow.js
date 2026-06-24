@@ -20,6 +20,24 @@ A) ORIGINAL baseline (before any fixes): analyst-usability C-:
    sheets, titles truncated at 10 words.
 B) MID-POINT grade (after the first 5 fixes): overall C+ 64.2/100. Robustness
    was the laggard at 3.6/5 (~15% of tables leaking corrupt Hindi).
+C) SECOND grade (after OCR recovery): overall B+ 79/100. The two laggards were
+   Table titles 3.25/5 (23% of tables untitled) and Column integrity 3.3/5
+   (18% mean col_N fraction, only 55% phantom-free).
+
+LATEST ROUND (this run) targeted exactly those two laggards:
+ 10 QUARANTINE FALSE PASSES: a diagnostic found ~38 phantom + ~24 untitled
+    "tables" were non-data — TOC/index pages (dotted leaders, Table-No+Page-No
+    vocab, section#|title|page structural layout) and prose paragraphs — that
+    had slipped past front-matter detection and shipped as col_N junk. They are
+    now quarantined (front_matter 54->96, +prose_text), so both metrics reflect
+    only real tables.
+ 11 TITLE RECOVERY: titles are now recovered from a leading descriptive cell
+    ("India - Key Indicators") and from captions with a leading enumerator
+    ("4. MOLBR - Delay …"); ~33 real titles recovered.
+ 12 COLUMN NAMING: compound labels ("Item/Year", "Ministry/Department") are
+    split on "/" and recovered instead of dropping to col_N; a genuinely
+    headerless TEXT dimension column is named "label" (analogue of the numeric
+    "value" rename). mean col_N fraction fell from 0.18 to 0.055.
 
 EVERYTHING SHIPPED (all guarded GREEN, 35 guard groups A–AJ):
  1 numeric normalization (strings -> int/float, unicode-minus, blanks for missing)

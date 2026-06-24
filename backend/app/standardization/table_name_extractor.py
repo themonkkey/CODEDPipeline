@@ -181,6 +181,12 @@ def extract_table_name(df, header_rows, caption=None):
                 r"[\s\-]*(no\.?)?[\s\-]*(\d+[A-Za-z]?(\.\d+)*)?[\s:.\-]+",
                 "", line, flags=re.IGNORECASE,
             ).strip() or line
+            # Strip a leading bare enumerator ("4. ", "C) ", "a. ") — a list
+            # marker DARPG/PLFS print before a section title. Without this, the
+            # trailing "." of "4." trips the sentence-punctuation reject below
+            # and a perfectly good title ("MOLBR - Delay in Final Settlement …")
+            # is discarded. Single letter / 1-2 digits only, so "No." survives.
+            line = re.sub(r"^\s*(\d{1,2}|[A-Za-z])[.)]\s+", "", line).strip() or line
             cleaned = _clean_title_words(line, limit=16)
             n_words = len(cleaned.split())
 
@@ -193,6 +199,42 @@ def extract_table_name(df, header_rows, caption=None):
                 if re.search(r"\bIndicators?\b", cleaned, re.IGNORECASE):
                     cleaned = _repair_state_name(cleaned)
                 return cleaned
+
+    # 2c) a leading descriptive cell as the title — a lone Title-Case phrase
+    #     sitting above the data ("India - Key Indicators", "Andhra Pradesh -
+    #     Key Indicators", "Distribution of households by source of lighting").
+    #     Many factsheet/compendium tables carry their title as the first row's
+    #     only populated cell rather than in a caption or a "Table N" label.
+    for i in range(min(3, len(df))):
+
+        row_cells = [str(v).strip() for v in df.iloc[i].tolist()]
+        non_empty = [c for c in row_cells if c and c not in ("nan", "None")]
+
+        if len(non_empty) != 1:
+            continue
+
+        line = non_empty[0]
+        if not re.search(r"[A-Za-z]", line):
+            continue
+        # reuse the same prefix / enumerator stripping as the caption path
+        line = re.sub(
+            r"^(table|tabel|statement|annexure|appendix|chapter|figure)\b"
+            r"[\s\-]*(no\.?)?[\s\-]*(\d+[A-Za-z]?(\.\d+)*)?[\s:.\-]+",
+            "", line, flags=re.IGNORECASE,
+        ).strip() or line
+        line = re.sub(r"^\s*(\d{1,2}|[A-Za-z])[.)]\s+", "", line).strip() or line
+
+        cleaned = _clean_title_words(line, limit=16)
+        n_words = len(cleaned.split())
+
+        if (
+            2 <= n_words <= 16
+            and not re.search(r"[.;]\s|[.;]$|\.$", line)
+            and len(cleaned) >= 0.5 * len(line)
+        ):
+            if re.search(r"\bIndicators?\b", cleaned, re.IGNORECASE):
+                cleaned = _repair_state_name(cleaned)
+            return cleaned
 
     # 3) no confident title — caller assigns a sequential "Table N"
     return None

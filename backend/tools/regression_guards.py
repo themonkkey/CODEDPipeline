@@ -1241,6 +1241,62 @@ def guard_ghost_suppression():
     check("normal table kept", validate_table(normal)["passed"])
 
 
+def guard_title_recovery():
+    """Guard AL — titles are recovered from a leading descriptive cell and from
+    captions with a leading enumerator, while genuine no-title tables stay None."""
+    print("Guard AL — title recovery (descriptive cell + enumerator caption)")
+    import pandas as pd
+    from backend.app.standardization.table_name_extractor import extract_table_name
+
+    # leading descriptive cell -> title
+    df_keyind = pd.DataFrame([
+        ["India - Key Indicators", "", "", ""],
+        ["Indicator", "Urban", "Rural", "Total"],
+        ["Population", "1,234", "5,678", "6,912"],
+    ])
+    nm = extract_table_name(df_keyind, 2, None)
+    check("leading 'India - Key Indicators' cell -> title", nm == "India Key Indicators", f"got {nm!r}")
+
+    # state-name repair still applies on recovered titles
+    df_hr = pd.DataFrame([["ryana - Key Indicators", "", ""], ["x", "1", "2"], ["y", "3", "4"]])
+    nm2 = extract_table_name(df_hr, 1, None)
+    check("recovered title repairs split state name", nm2 == "Haryana Key Indicators", f"got {nm2!r}")
+
+    # caption with leading enumerator "4." -> accepted (was rejected as prose)
+    df_data = pd.DataFrame([["2022", "2023", "Total"], ["7,908", "10,717", "18,625"]])
+    nm3 = extract_table_name(df_data, 1,
+                             "4. MOLBR - Delay in Final Settlement / Final PF Withdrawal")
+    check("enumerator caption '4. …' -> title", nm3 is not None and "MOLBR" in nm3, f"got {nm3!r}")
+
+    # a real data table with no caption and no title cell -> still None (no fabrication)
+    df_plain = pd.DataFrame([
+        ["Andhra Pradesh", "1,234", "5,678"],
+        ["Bihar", "2,345", "6,789"],
+        ["Kerala", "3,456", "7,890"],
+    ])
+    nm4 = extract_table_name(df_plain, 1, None)
+    check("plain data table stays untitled (no fabrication)", nm4 is None, f"got {nm4!r}")
+
+    # prose first cell is NOT taken as a title (sentence punctuation)
+    df_prose = pd.DataFrame([
+        ["This table presents the distribution of households across states.", "", ""],
+        ["State", "Rural", "Urban"],
+        ["AP", "1", "2"],
+    ])
+    nm5 = extract_table_name(df_prose, 2, None)
+    check("prose sentence cell not taken as title", nm5 is None, f"got {nm5!r}")
+
+    # real PDF: NFHS5 india p6 recovers "India Key Indicators"
+    nfhs = os.path.join(ROOT, "Testpdfs/new/nfhs5_india.pdf")
+    if os.path.exists(nfhs):
+        path = _slice(nfhs, 6, 6)
+        items = [i for i in _pipeline(path) if i["passed"]]
+        os.unlink(path)
+        names = [i["name"] for i in items]
+        check("nfhs5_india p6 -> 'India Key Indicators'",
+              "India Key Indicators" in names, f"got {names}")
+
+
 def guard_toc_prose_quarantine():
     """Guard AK — TOC/index pages and prose paragraphs are quarantined, while
     genuine data tables (even text-heavy ones) still pass."""
@@ -1330,7 +1386,8 @@ if __name__ == "__main__":
                    guard_numeric_readiness_metric, guard_thin_subheader,
                    guard_section_lift, guard_multilevel_header_merge,
                    guard_workbook_toc, guard_numeric_normalization,
-                   guard_ghost_suppression, guard_toc_prose_quarantine)
+                   guard_ghost_suppression, guard_toc_prose_quarantine,
+                   guard_title_recovery)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

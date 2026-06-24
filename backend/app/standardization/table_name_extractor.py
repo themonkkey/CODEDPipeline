@@ -164,17 +164,19 @@ def extract_table_name(df, header_rows, caption=None):
                 return f"{m.group(1)} " + " ".join(words[:18])
 
     # 2b) caption text — but only if it reads like a TITLE, not prose:
-    #    a short line (2–10 words) without sentence punctuation.
+    #    a short line (2–16 words) without sentence punctuation. The upper bound
+    #    matches the de-truncation limit so descriptive headings
+    #    ("Distribution of households by source of lighting and fuel") survive.
     if caption:
 
         for line in str(caption).splitlines():
 
             line = line.strip()
-            cleaned = _clean_title_words(line, limit=12)
+            cleaned = _clean_title_words(line, limit=16)
             n_words = len(cleaned.split())
 
             if (
-                2 <= n_words <= 10
+                2 <= n_words <= 16
                 and not re.search(r"[.;:]\s|\.$", line)
                 and len(cleaned) >= 0.6 * len(line)
             ):

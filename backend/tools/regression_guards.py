@@ -660,6 +660,40 @@ def guard_numeric_readiness_metric():
           f"got {mp['numeric_readiness']}")
 
 
+def guard_descriptive_title():
+    """Guard AA — descriptive (non-'Table N') headings above a table are captured
+    as titles, while body prose and 'Table N' lines behave as before.
+
+    ~47% of tables had no title because _title_from_lines only accepted
+    'Table N'/numbered-section lines; a purely descriptive heading
+    ('Distribution of households by source of lighting') fell through. The new
+    heading detector must accept those and still reject sentences/data rows."""
+    print("Guard AA — descriptive title capture (_title_from_lines)")
+    from backend.app.extract.table_extractor import _looks_like_heading, _title_from_lines
+
+    check("descriptive Title-Case heading accepted",
+          _looks_like_heading("Distribution of Households by Source of Lighting"))
+    check("keyworded lower heading accepted",
+          _looks_like_heading("Number of registered vehicles by state-wise category"))
+    check("body sentence rejected",
+          not _looks_like_heading("The table below shows the data we collected over the year."))
+    check("dangling-colon prose rejected", not _looks_like_heading("As shown below:"))
+    check("numeric data row rejected", not _looks_like_heading("1990 10 20 30 40"))
+    check("one-word line rejected", not _looks_like_heading("Notes"))
+
+    # 'Table N' still wins when present
+    lines = ["Some intro paragraph that rambles on and on about methodology.",
+             "Table 4.2 Literacy rate by district"]
+    check("explicit Table-N still preferred",
+          _title_from_lines(lines).startswith("Table 4.2"), f"got {_title_from_lines(lines)}")
+    # descriptive heading recovered when no Table-N exists
+    lines2 = ["Source: Census 2011.",
+              "Distribution of Workers by Industry and Sex"]
+    check("descriptive heading recovered",
+          _title_from_lines(lines2) == "Distribution of Workers by Industry and Sex",
+          f"got {_title_from_lines(lines2)}")
+
+
 def guard_column_dedupe():
     """Guard W — duplicate column names are made unique (pandas/SQL-safe) without
     disturbing already-unique schemas.
@@ -1021,11 +1055,11 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
-                   guard_column_dedupe, guard_phantom_value_columns,
-                   guard_numeric_readiness_metric, guard_thin_subheader,
-                   guard_section_lift, guard_multilevel_header_merge,
-                   guard_workbook_toc, guard_numeric_normalization,
-                   guard_ghost_suppression)
+                   guard_descriptive_title, guard_column_dedupe,
+                   guard_phantom_value_columns, guard_numeric_readiness_metric,
+                   guard_thin_subheader, guard_section_lift,
+                   guard_multilevel_header_merge, guard_workbook_toc,
+                   guard_numeric_normalization, guard_ghost_suppression)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

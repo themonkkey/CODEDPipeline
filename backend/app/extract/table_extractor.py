@@ -159,6 +159,36 @@ def _repair_header_positionally(table, plumber_pdf):
 # numbered section heading: "2.4 Ranking of Ministries/Departments – Group A"
 SECTION_LINE = re.compile(r"^\d{1,2}(\.\d{1,2})+[\s\-–:]+[A-Z]")
 
+# words that mark a line as a TABLE heading rather than body prose
+_HEADING_KEYWORD = re.compile(
+    r"\b(distribution|number|percentage|proportion|ratio|rate|trends?|"
+    r"share|estimate[ds]?|coverage|prevalence|growth|index|average|"
+    r"summary|profile|indicators?|statistics?|status|composition|"
+    r"classification|state[\s\-]?wise|district[\s\-]?wise|category[\s\-]?wise|"
+    r"by\s+(age|sex|state|district|sector|type|group|category|level))\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_heading(line):
+    """A descriptive (non-'Table N') title line, distinguished from body prose.
+
+    Headings are short, carry no sentence punctuation, start with a letter, are
+    mostly alphabetic, and either read as Title Case or carry a statistical
+    heading keyword ('Distribution of …', 'Number of …', '… state-wise')."""
+    words = line.split()
+    if not (2 <= len(words) <= 16):
+        return False
+    if line[:1].islower() or not line[:1].isalpha():
+        return False
+    if re.search(r"[.;]\s|[.;]$|:\s*$", line):     # sentence-like / dangling colon
+        return False
+    compact = line.replace(" ", "")
+    if not compact or sum(c.isalpha() for c in compact) < 0.6 * len(compact):
+        return False                                # mostly digits/symbols -> a data row
+    titlecase = sum(1 for w in words if w[:1].isupper()) >= max(2, len(words) * 0.5)
+    return titlecase or bool(_HEADING_KEYWORD.search(line))
+
 
 def _title_from_lines(lines):
     """Best title candidate from text lines above a table, or None."""
@@ -193,6 +223,13 @@ def _title_from_lines(lines):
                 line += " " + lines[i + 1]
 
             return line[:300]
+
+    # descriptive heading (no "Table N" prefix): the closest title-like line
+    # above the table — recovers the ~half of tables whose heading is purely
+    # descriptive ("Distribution of households by source of lighting").
+    for i in range(len(lines) - 1, -1, -1):
+        if _looks_like_heading(lines[i]):
+            return lines[i][:300]
 
     return None
 

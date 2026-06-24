@@ -159,6 +159,15 @@ def _repair_header_positionally(table, plumber_pdf):
 # numbered section heading: "2.4 Ranking of Ministries/Departments – Group A"
 SECTION_LINE = re.compile(r"^\d{1,2}(\.\d{1,2})+[\s\-–:]+[A-Z]")
 
+# a chapter / part / annexure-style GOVERNING heading (spans multiple tables),
+# as opposed to a per-table "Table X.Y" title
+_SECTION_HEADING = re.compile(r"^(chapter|section|part|annex(ure)?)\b", re.IGNORECASE)
+
+
+def _is_section_heading(cap):
+    cap = str(cap).strip()
+    return bool(_SECTION_HEADING.match(cap) or SECTION_LINE.match(cap))
+
 # words that mark a line as a TABLE heading rather than body prose
 _HEADING_KEYWORD = re.compile(
     r"\b(distribution|number|percentage|proportion|ratio|rate|trends?|"
@@ -608,6 +617,24 @@ def extract_tables(pdf_path):
             "caption": _extract_caption(plumber_pdf, t["page"], t["bbox"]),
             "flavor": t["flavor"],
         })
+
+    # Chapter/section carry-forward: a governing heading ("Chapter-2C Kidnapping
+    # & Abduction", "2.4 Ranking of …") titles the untitled tables printed below
+    # it until the next heading. Only fills EMPTY captions and only carries a
+    # section-level heading — never a specific "Table X.Y" title, which is
+    # per-table — so a neighbour is never given the wrong table's name.
+    last_section = None
+    last_section_page = None
+    for t in results:
+        cap = t["caption"]
+        if cap and _is_section_heading(cap):
+            last_section, last_section_page = cap, t["page"]
+        elif (
+            not cap
+            and last_section
+            and t["page"] - last_section_page <= 5
+        ):
+            t["caption"] = last_section
 
     if plumber_pdf is not None:
         try:

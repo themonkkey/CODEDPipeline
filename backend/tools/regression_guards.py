@@ -660,6 +660,21 @@ def guard_numeric_readiness_metric():
           f"got {mp['numeric_readiness']}")
 
 
+def guard_section_heading_detection():
+    """Guard AE — chapter/section governing headings are recognised for
+    carry-forward, while per-table 'Table X.Y' titles are NOT (they must never be
+    carried onto a neighbouring table)."""
+    print("Guard AE — section-heading detection (carry-forward gate)")
+    from backend.app.extract.table_extractor import _is_section_heading
+
+    check("Chapter heading recognised", _is_section_heading("Chapter-2C Kidnapping & Abduction"))
+    check("numbered section recognised", _is_section_heading("2.4 Ranking of Ministries - Group A"))
+    check("Annexure heading recognised", _is_section_heading("Annexure VIII Mother Tongue"))
+    check("'Table X.Y' NOT a section heading", not _is_section_heading("Table 5.2 Sex Ratio"))
+    check("descriptive title NOT a section heading",
+          not _is_section_heading("Distribution of households by lighting"))
+
+
 def guard_continuation_title_inheritance():
     """Guard AD — an untitled continuation fragment inherits its parent's title
     as '(cont.)', but an unrelated neighbour never does.
@@ -1154,6 +1169,7 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
+                   guard_section_heading_detection,
                    guard_continuation_title_inheritance,
                    guard_title_and_composite_metric, guard_mojibake_quarantine,
                    guard_descriptive_title,

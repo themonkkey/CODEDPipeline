@@ -127,6 +127,48 @@ def _continues(prev, cur):
     return False
 
 
+def _cols_similar(a_cols, b_cols, thresh=0.5):
+    """Two column lists describe the same table when most positional names match
+    (letters-only, prefix-tolerant for page-to-page word-wrap)."""
+    a = [re.sub(r"[^a-z0-9]", "", str(c).lower()) for c in a_cols]
+    b = [re.sub(r"[^a-z0-9]", "", str(c).lower()) for c in b_cols]
+    if not a or abs(len(a) - len(b)) > 2:
+        return False
+    matched = sum(
+        1 for x, y in zip(a, b)
+        if x == y or (len(x) >= 4 and len(y) >= 4 and (x.startswith(y) or y.startswith(x)))
+    )
+    return matched / len(a) >= thresh
+
+
+def _inherit_continuation_titles(out):
+    """Give an untitled fragment its parent table's title.
+
+    A continuation page often prints no heading (the title sits on an earlier
+    page), and when the structural gates kept it from merging it ships untitled.
+    An untitled table on the next page of a titled one with the SAME column
+    shape is that table continued — adopt the title with a "(cont.)" marker.
+    Conservative: requires page-adjacency, equal width, and column similarity,
+    so an unrelated neighbour is never mislabelled."""
+    last_named = None
+    for it in out:
+        name = it.get("name")
+        if name and not _FALLBACK_NAME.fullmatch(str(name)):
+            last_named = it
+            continue
+        if name or last_named is None:
+            continue
+        gap = it["pages"][0] - last_named["pages"][-1]
+        same_width = it["df"].shape[1] == last_named["df"].shape[1]
+        headerless = _named_frac(it["df"].columns) < 0.2
+        if 1 <= gap <= 1 and same_width and (
+            _cols_similar(last_named["df"].columns, it["df"].columns) or headerless
+        ):
+            base = re.sub(r"\s*\(cont\.\)$", "", str(last_named["name"])).strip()
+            it["name"] = f"{base} (cont.)"
+    return out
+
+
 def stitch_tables(items):
     """
     items: list of dicts with keys table_id, name, page, df —
@@ -177,6 +219,9 @@ def stitch_tables(items):
 
         else:
             out.append(it)
+
+    # Untitled continuation fragments inherit their parent table's title.
+    _inherit_continuation_titles(out)
 
     # Drop exact duplicate rows that accumulate when the same data appears
     # in both a summary table and a detail table (Econ Survey pattern).

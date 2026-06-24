@@ -660,6 +660,38 @@ def guard_numeric_readiness_metric():
           f"got {mp['numeric_readiness']}")
 
 
+def guard_continuation_title_inheritance():
+    """Guard AD — an untitled continuation fragment inherits its parent's title
+    as '(cont.)', but an unrelated neighbour never does.
+
+    Continuation pages often print no heading; when structural gates keep them
+    from merging they ship untitled. _inherit_continuation_titles gives such a
+    page-adjacent, same-shape, column-similar fragment the parent title."""
+    print("Guard AD — continuation title inheritance (stitch_tables)")
+    import pandas as pd
+    from backend.app.standardization.table_stitcher import stitch_tables
+
+    parent = {"table_id": 1, "name": "Table 5 Sex Ratio by District", "page": 10,
+              "df": pd.DataFrame([["A", "1"], ["B", "2"]], columns=["district", "ratio"])}
+    # untitled, next page, same shape + columns -> inherits "(cont.)"
+    cont = {"table_id": 2, "name": None, "page": 11,
+            "df": pd.DataFrame([["C", "3"]], columns=["district", "ratio"])}
+    # untitled, far page + different columns -> must NOT inherit
+    unrelated = {"table_id": 3, "name": None, "page": 40,
+                 "df": pd.DataFrame([["x", "y", "z"]], columns=["crop", "area", "yield"])}
+    out = stitch_tables([dict(parent), dict(cont), dict(unrelated)])
+    by_id = {o["table_id"]: o for o in out}
+    # cont may merge into parent OR inherit as a separate (cont.) table; either
+    # way its data must carry the parent's title, and the unrelated table must not.
+    cont_titled = (2 not in by_id) or (by_id.get(2, {}).get("name") or "").startswith("Table 5")
+    check("continuation carries parent title", cont_titled,
+          f"got {[(o['table_id'], o.get('name')) for o in out]}")
+    if 3 in by_id:
+        check("unrelated table not mislabelled",
+              not str(by_id[3].get("name") or "").startswith("Table 5"),
+              f"got {by_id[3].get('name')}")
+
+
 def guard_title_and_composite_metric():
     """Guard AC — title-prefix stripping recovers more titles, and the honest
     composite metric counts genuine multi-level names (not just year-spans).
@@ -1122,6 +1154,7 @@ if __name__ == "__main__":
                    guard_rbi_orphan_merge, guard_rbi_msp_headers, guard_rbi_bare_year,
                    guard_rbi_multilevel_header, guard_numeric_below_unit,
                    guard_header_recovery_gate, guard_side_by_side_split,
+                   guard_continuation_title_inheritance,
                    guard_title_and_composite_metric, guard_mojibake_quarantine,
                    guard_descriptive_title,
                    guard_column_dedupe, guard_phantom_value_columns,

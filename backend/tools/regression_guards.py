@@ -929,20 +929,23 @@ def guard_column_dedupe():
 
 def guard_phantom_value_columns():
     """Guard X — headerless NUMERIC value columns become 'value' (addressable),
-    while unnamed text/label columns and column 0 stay untouched.
+    headerless TEXT label columns become 'label', and named columns stay untouched.
 
     A col_N column carrying real numbers is data whose header was lost upstream;
-    naming it 'value' (deduped downstream to value/value_2/…) stops it reading as
-    extraction noise. A col_N column of text (an unnamed label column like RBI
-    Table 61's instrument names) must NOT be mislabelled 'value'."""
-    print("Guard X — phantom numeric value-column naming (clean_headers)")
+    naming it 'value' (deduped to value/value_2/…) stops it reading as extraction
+    noise. A col_N column of TEXT must NOT be mislabelled 'value' — it is a lost
+    label column, named 'label' instead so it is addressable."""
+    print("Guard X — phantom value/label column naming (clean_headers)")
     import pandas as pd
-    from backend.app.cleaning.header_postprocessor import clean_headers, _is_numeric_column
+    from backend.app.cleaning.header_postprocessor import (
+        clean_headers, _is_numeric_column, _is_text_label_column)
 
     check("numeric column detected", _is_numeric_column(pd.Series(["1", "2", "3", "-"])))
     check("text column not numeric", not _is_numeric_column(pd.Series(["RTGS", "NEFT", "IMPS"])))
+    check("text label column detected", _is_text_label_column(pd.Series(["RTGS", "NEFT", "IMPS"])))
+    check("numeric column not a text label", not _is_text_label_column(pd.Series(["1", "2", "3"])))
 
-    # numeric headerless value cols -> value / value_2 ; label col 0 kept; text col_N kept
+    # numeric headerless value cols -> value/value_2 ; named col 0 kept ; text col_N -> label
     df = pd.DataFrame(
         [["North", "10", "20", "high"], ["South", "11", "21", "low"]],
         columns=["region", "col_1", "col_2", "col_3"])
@@ -950,10 +953,17 @@ def guard_phantom_value_columns():
     cols = list(out.columns)
     check("numeric col_N -> value*", sum(1 for c in cols if c.startswith("value")) == 2,
           f"got {cols}")
-    check("text col_N kept unnamed (col)", any(re.fullmatch(r"col(_\d+)?", c) for c in cols),
-          f"got {cols}")
-    check("label column 0 untouched", cols[0] == "region", f"got {cols}")
+    check("text col_N -> label (not value)", any(c.startswith("label") for c in cols)
+          and not any(re.fullmatch(r"col(_\d+)?", c) for c in cols), f"got {cols}")
+    check("named column 0 untouched", cols[0] == "region", f"got {cols}")
     check("all columns unique", len(set(cols)) == len(cols), f"got {cols}")
+
+    # an unnamed FIRST dimension column (the common phantom) -> label
+    df2 = pd.DataFrame(
+        [["Andhra Pradesh", "1,234"], ["Bihar", "2,345"], ["Kerala", "3,456"]],
+        columns=["col", "value"])
+    cols2 = list(clean_headers(df2).columns)
+    check("unnamed first dimension col -> label", cols2[0] == "label", f"got {cols2}")
 
 
 def guard_section_lift():

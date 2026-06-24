@@ -118,6 +118,23 @@ def _is_numeric_column(series):
     return sum(1 for v in judged if _NUM_CELL.match(v)) / len(judged) >= 0.8
 
 
+_TEXT_CHAR = re.compile(r"[A-Za-zऀ-ॿ]")
+
+
+def _is_text_label_column(series):
+    """True when an unnamed column holds row labels — substantially populated and
+    predominantly non-numeric text (state/item/ministry names). Such a column is
+    the table's dimension key; naming it "label" makes it addressable instead of
+    reading as extraction noise (the text-column analogue of the numeric "value"
+    rename)."""
+    vals = [str(v).strip() for v in series.tolist()]
+    pop = [v for v in vals if v.lower() not in _NUM_PLACEHOLDER]
+    if not pop or len(pop) < max(2, 0.5 * len(vals)):
+        return False
+    texty = sum(1 for v in pop if not _NUM_CELL.match(v) and _TEXT_CHAR.search(v))
+    return texty / len(pop) >= 0.6
+
+
 def _dedupe_columns(columns):
     """Make column names unique so the table loads into pandas/SQL without
     silent value-coalescing.
@@ -151,12 +168,18 @@ def clean_headers(df):
         cleaned = clean_column_name(col)
         if cleaned is None:
             cleaned = f"col_{i}"
-        # A headerless but data-bearing value column ("col_3") is real data whose
-        # header was lost upstream — name it "value" so it is addressable instead
-        # of reading as extraction noise. Skip column 0 (the row-label/dimension
-        # column) and any column that is text (e.g. an unnamed label column).
-        if i > 0 and _PHANTOM.fullmatch(cleaned) and _is_numeric_column(df.iloc[:, i]):
-            cleaned = "value"
+        if _PHANTOM.fullmatch(cleaned):
+            series = df.iloc[:, i]
+            # A headerless but data-bearing value column ("col_3") is real data
+            # whose header was lost upstream — name it "value" so it is
+            # addressable instead of reading as extraction noise. Skip column 0
+            # (the row-label/dimension column).
+            if i > 0 and _is_numeric_column(series):
+                cleaned = "value"
+            # A headerless text column holding row labels (the dimension key,
+            # usually column 0) — name it "label" for the same reason.
+            elif _is_text_label_column(series):
+                cleaned = "label"
         new_cols.append(cleaned)
 
     df.columns = new_cols

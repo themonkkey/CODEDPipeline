@@ -155,8 +155,12 @@ def extract_english(text):
 
     filtered = []
     for chunk in matches:
+        # Split on slash as well as whitespace: compound labels like
+        # "Item/Year", "Ministry/Department", "State/UT" arrive as one token,
+        # and the joined form ("ItemYear") fails the Titlecase test, dropping a
+        # real header to col_N. Splitting recovers each Titlecase part.
         words = [
-            w for w in chunk.split()
+            w for w in re.split(r"[\s/]+", chunk)
             if _looks_english(w)
         ]
         if words:

@@ -1,0 +1,107 @@
+<title>Status card — redesign</title>
+<style>
+:root{
+  --paper:#f6efdf;--paper-2:#ebdfc6;--ink:#232c45;--navy:#273050;
+  --soft:#76809c;--blue:#5468a8;--gold:#c09a4a;
+  --serif:'Fraunces',Georgia,serif;--sans:'Hanken Grotesk',-apple-system,'Segoe UI',sans-serif;
+  --mono:'Space Mono',ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);min-height:100vh;padding:54px 40px;color:var(--navy);
+  background:radial-gradient(60% 45% at 12% 0%,rgba(192,154,74,.16),transparent 70%),
+    radial-gradient(55% 60% at 82% 38%,rgba(84,104,168,.10),transparent 70%),
+    radial-gradient(120% 90% at 50% 0%,#fdfaf1 0%,var(--paper) 55%,var(--paper-2) 100%) fixed;}
+.lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--soft);margin:0 0 12px}
+.old{max-width:660px;margin-bottom:46px}
+.scan-msg{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--gold)}
+.scan-sub{color:var(--soft);font-size:12px;margin-top:6px;font-family:var(--mono);letter-spacing:.08em}
+.scan-bar{height:3px;border-radius:2px;background:rgba(35,44,69,.25);margin-top:14px;overflow:hidden}
+.scan-bar>div{height:100%;width:46%;background:var(--gold);border-radius:2px}
+
+/* NEW */
+.status-card{max-width:660px;margin-top:14px;padding:22px 26px;border-radius:18px;
+  background:linear-gradient(180deg,rgba(255,255,255,.72),rgba(255,253,246,.52));
+  border:1px solid rgba(35,44,69,.12);
+  box-shadow:0 1px 2px rgba(35,44,69,.05),0 18px 44px rgba(35,44,69,.12);}
+.status-head{display:flex;align-items:center;gap:13px}
+.status-dot{width:11px;height:11px;border-radius:50%;flex:none;background:var(--gold);
+  box-shadow:0 0 0 0 rgba(192,154,74,.5);animation:pulse 1.5s ease-out infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(192,154,74,.45)}100%{box-shadow:0 0 0 13px rgba(192,154,74,0)}}
+.status-step{font-family:var(--sans);font-weight:700;font-size:17px;color:var(--ink);text-transform:capitalize}
+.status-pct{margin-left:auto;font-family:var(--serif);font-size:28px;font-weight:500;color:var(--gold);line-height:1}
+.status-meta{font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--soft);margin:11px 0 16px}
+.status-track{position:relative;height:9px;border-radius:99px;overflow:hidden;background:rgba(35,44,69,.10)}
+.status-fill{position:relative;height:100%;border-radius:99px;
+  background:linear-gradient(90deg,var(--gold),#d8b25f 45%,var(--blue));box-shadow:0 0 12px rgba(192,154,74,.45)}
+.status-fill::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);animation:sh 1.5s linear infinite}
+@keyframes sh{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.indet .status-fill{width:36%!important;animation:indet 1.4s cubic-bezier(.5,0,.5,1) infinite}
+@keyframes indet{0%{margin-left:-36%}100%{margin-left:100%}}
+</style>
+
+<p class="lbl">Before — current</p>
+<div class="old">
+  <div class="scan-msg">READING THE DOCUMENT</div>
+  <div class="scan-sub">…LL_INDIA_REPORT_PUBLISHED_BY_ESD_CSO (1).pdf · 390 pages · ~7m 48s estimated</div>
+  <div class="scan-bar"><div></div></div>
+</div>
+
+<p class="lbl">After — indeterminate (reading)</p>
+<div class="status-card">
+  <div class="status-head">
+    <span class="status-dot"></span>
+    <span class="status-step">reading the document</span>
+  </div>
+  <div class="status-meta">…LL_INDIA_REPORT_PUBLISHED_BY_ESD_CSO (1).pdf &nbsp;·&nbsp; 390 pages &nbsp;·&nbsp; ~7m 48s estimated</div>
+  <div class="status-track indet"><div class="status-fill"></div></div>
+</div>
+
+<p class="lbl" style="margin-top:40px">After — flip-clock countdown (ticks every second)</p>
+<style>
+  .clock{margin-left:auto;display:flex;align-items:center;gap:4px}
+  .digit{position:relative;width:28px;height:38px;border-radius:7px;
+    background:linear-gradient(180deg,#2c3658,#1b2440);color:#e7d3a3;
+    font-family:var(--mono);font-weight:700;font-size:23px;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 3px 8px rgba(35,44,69,.28),inset 0 0 0 1px rgba(231,211,163,.10)}
+  .digit::after{content:'';position:absolute;left:3px;right:3px;top:50%;height:1px;
+    transform:translateY(-.5px);background:rgba(0,0,0,.34)}
+  .digit.flip{animation:flip .34s ease-in-out}
+  @keyframes flip{0%{transform:perspective(220px) rotateX(0)}
+    49%{transform:perspective(220px) rotateX(-88deg)}
+    50%{transform:perspective(220px) rotateX(88deg)}
+    100%{transform:perspective(220px) rotateX(0)}}
+  .colon{color:var(--gold);font-family:var(--mono);font-weight:700;font-size:21px;animation:cb 1s steps(1) infinite}
+  @keyframes cb{50%{opacity:.25}}
+  .left{margin-left:7px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--soft)}
+</style>
+<div class="status-card">
+  <div class="status-head">
+    <span class="status-dot"></span>
+    <span class="status-step">reading the document</span>
+    <span class="clock" id="clk">
+      <span class="digit">0</span><span class="digit">0</span><span class="colon">:</span>
+      <span class="digit">0</span><span class="digit">0</span><span class="left">left</span>
+    </span>
+  </div>
+  <div class="status-meta">…LL_INDIA_REPORT_PUBLISHED_BY_ESD_CSO (1).pdf &nbsp;·&nbsp; 390 pages</div>
+  <div class="status-track indet"><div class="status-fill"></div></div>
+</div>
+<script>
+  var t = 468, cells = document.querySelectorAll('#clk .digit');
+  function setD(el,ch){if(el.textContent===ch)return;el.classList.remove('flip');void el.offsetWidth;el.classList.add('flip');setTimeout(function(){el.textContent=ch;},165);}
+  function render(){var s=Math.max(0,t),m=Math.floor(s/60),ss=s%60;var str=String(Math.min(99,m)).padStart(2,'0')+String(ss).padStart(2,'0');cells.forEach(function(el,i){setD(el,str[i]);});}
+  render(); setInterval(function(){if(t>0)t--;render();},1000);
+</script>
+
+<p class="lbl" style="margin-top:40px">After — with progress %</p>
+<div class="status-card">
+  <div class="status-head">
+    <span class="status-dot"></span>
+    <span class="status-step">merging header levels</span>
+    <span class="status-pct">62%</span>
+  </div>
+  <div class="status-meta">table 41 of 66 &nbsp;·&nbsp; naming and stitching tables</div>
+  <div class="status-track"><div class="status-fill" style="width:62%"></div></div>
+</div>

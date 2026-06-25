@@ -434,6 +434,60 @@ div[data-testid="stFileUploader"]:hover {
   font-family: var(--serif); font-size: 30px; color: var(--gold); line-height: 1;
 }
 
+/* ── status card (during extraction) ── */
+.status-card {
+  max-width: 660px; margin-top: 18px; padding: 22px 26px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,253,246,0.52));
+  border: 1px solid rgba(35,44,69,0.12);
+  box-shadow: 0 1px 2px rgba(35,44,69,0.05), 0 18px 44px rgba(35,44,69,0.12);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  animation: status-rise .5s cubic-bezier(.2,.9,.3,1) backwards;
+}
+@keyframes status-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.status-head { display: flex; align-items: center; gap: 13px; }
+.status-dot {
+  width: 11px; height: 11px; border-radius: 50%; flex: none;
+  background: var(--gold); box-shadow: 0 0 0 0 rgba(192,154,74,0.5);
+  animation: status-pulse 1.5s ease-out infinite;
+}
+@keyframes status-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(192,154,74,0.45); }
+  100% { box-shadow: 0 0 0 13px rgba(192,154,74,0); }
+}
+.status-step {
+  font-family: var(--sans); font-weight: 700; font-size: 17px;
+  color: var(--ice); letter-spacing: 0.01em; text-transform: capitalize;
+}
+.status-pct {
+  margin-left: auto; font-family: var(--serif); font-size: 28px;
+  font-weight: 500; color: var(--gold); line-height: 1;
+}
+.status-meta {
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em;
+  color: var(--soft); margin: 11px 0 16px;
+}
+.status-track {
+  position: relative; height: 9px; border-radius: 99px; overflow: hidden;
+  background: rgba(35,44,69,0.10);
+}
+.status-fill {
+  position: relative; height: 100%; border-radius: 99px;
+  background: linear-gradient(90deg, var(--gold), #d8b25f 45%, var(--blue));
+  box-shadow: 0 0 12px rgba(192,154,74,0.45);
+  transition: width .35s ease;
+}
+.status-fill::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+  animation: status-shimmer 1.5s linear infinite;
+}
+@keyframes status-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.status-track.indet .status-fill {
+  width: 36% !important; animation: status-indet 1.4s cubic-bezier(.5,0,.5,1) infinite;
+}
+@keyframes status-indet { 0% { margin-left: -36%; } 100% { margin-left: 100%; } }
+
 .cube-pane { position: relative; height: 520px; margin-top: 9vh; }
 .cube-pane .cube-stage { top: 150px; transform: scale(1.95); }
 .cube-pane .cube-shadow { top: 360px; transform: scale(2.9); }
@@ -804,19 +858,106 @@ def _fmt_eta(seconds):
 
 
 def status_html(msg, sub="", pct=None):
-    bar_cls = "scan-bar" if pct is not None else "scan-bar indet"
-    width = f"{pct:.0f}%" if pct is not None else "35%"
-    pct_label = (
-        f'<span class="scan-pct">{pct:.0f}%</span>'
-        if pct is not None else
-        '<span class="scan-pct">&hellip;</span>'
-    )
+    indet = pct is None
+    width = "36%" if indet else f"{pct:.0f}%"
+    track_cls = "status-track indet" if indet else "status-track"
+    pct_label = "" if indet else f'<span class="status-pct">{pct:.0f}%</span>'
+    meta = f'<div class="status-meta">{sub}</div>' if sub else ""
     return f"""
-    <div class="status-left">
-      <div class="scan-row"><div class="scan-msg">{msg}</div>{pct_label}</div>
-      <div class="scan-sub">{sub}</div>
-      <div class="{bar_cls}"><div style="width:{width}"></div></div>
+    <div class="status-card">
+      <div class="status-head">
+        <span class="status-dot"></span>
+        <span class="status-step">{msg}</span>
+        {pct_label}
+      </div>
+      {meta}
+      <div class="{track_cls}"><div class="status-fill" style="width:{width}"></div></div>
     </div>"""
+
+
+def status_countdown(msg, filename, pages, eta_seconds):
+    """The reading-phase status card with a LIVE client-side countdown.
+
+    extract_tables() blocks the Streamlit server, so Python cannot tick the
+    clock; the JS below runs in the browser during the blocked call. Rendered
+    via components.html (an iframe) because st.markdown strips <script>."""
+    import streamlit.components.v1 as _components
+    safe_file = (filename or "").replace("<", "&lt;").replace(">", "&gt;")
+    html = f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@700&family=Space+Mono:wght@700&display=swap');
+    html,body{{margin:0;background:transparent;font-family:'Hanken Grotesk',Arial,sans-serif}}
+    .sc{{max-width:660px;padding:22px 26px;border-radius:18px;
+      background:linear-gradient(180deg,rgba(255,255,255,0.78),rgba(255,253,246,0.55));
+      border:1px solid rgba(35,44,69,0.12);
+      box-shadow:0 1px 2px rgba(35,44,69,0.05),0 18px 44px rgba(35,44,69,0.12);
+      -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}}
+    .h{{display:flex;align-items:center;gap:13px}}
+    .dot{{width:11px;height:11px;border-radius:50%;background:#c09a4a;flex:none;
+      box-shadow:0 0 0 0 rgba(192,154,74,.5);animation:p 1.5s ease-out infinite}}
+    @keyframes p{{0%{{box-shadow:0 0 0 0 rgba(192,154,74,.45)}}100%{{box-shadow:0 0 0 13px rgba(192,154,74,0)}}}}
+    .step{{font-weight:700;font-size:17px;color:#232c45;text-transform:capitalize}}
+    .meta{{font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.04em;color:#76809c;margin:11px 0 16px}}
+    .track{{position:relative;height:9px;border-radius:99px;overflow:hidden;background:rgba(35,44,69,.10)}}
+    .fill{{position:absolute;height:100%;width:36%;border-radius:99px;
+      background:linear-gradient(90deg,#c09a4a,#d8b25f 45%,#5468a8);box-shadow:0 0 12px rgba(192,154,74,.45);
+      animation:slide 1.4s cubic-bezier(.5,0,.5,1) infinite}}
+    .fill::after{{content:'';position:absolute;inset:0;
+      background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);animation:sh 1.5s linear infinite}}
+    @keyframes slide{{0%{{left:-36%}}100%{{left:100%}}}}
+    @keyframes sh{{from{{transform:translateX(-100%)}}to{{transform:translateX(100%)}}}}
+    /* flip clock */
+    .clock{{margin-left:auto;display:flex;align-items:center;gap:4px}}
+    .digit{{position:relative;width:26px;height:36px;border-radius:7px;
+      background:linear-gradient(180deg,#2c3658,#1b2440);
+      color:#e7d3a3;font-family:'Space Mono',monospace;font-weight:700;font-size:22px;
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 3px 8px rgba(35,44,69,.28),inset 0 0 0 1px rgba(231,211,163,.10);
+      transform-origin:center;backface-visibility:hidden}}
+    .digit::after{{content:'';position:absolute;left:3px;right:3px;top:50%;height:1px;
+      transform:translateY(-.5px);background:rgba(0,0,0,.34)}}
+    .digit.flip{{animation:flip .34s ease-in-out}}
+    @keyframes flip{{0%{{transform:perspective(220px) rotateX(0)}}
+      49%{{transform:perspective(220px) rotateX(-88deg)}}
+      50%{{transform:perspective(220px) rotateX(88deg)}}
+      100%{{transform:perspective(220px) rotateX(0)}}}}
+    .colon{{color:#c09a4a;font-family:'Space Mono',monospace;font-weight:700;font-size:20px;
+      animation:cb 1s steps(1) infinite}}
+    @keyframes cb{{50%{{opacity:.25}}}}
+    .left{{margin-left:7px;font-family:'Space Mono',monospace;font-size:10px;letter-spacing:.16em;
+      text-transform:uppercase;color:#76809c}}
+    </style>
+    <div class="sc">
+      <div class="h">
+        <span class="dot"></span><span class="step">{msg}</span>
+        <span class="clock" id="clock">
+          <span class="digit" data-i="0">0</span><span class="digit" data-i="1">0</span>
+          <span class="colon">:</span>
+          <span class="digit" data-i="2">0</span><span class="digit" data-i="3">0</span>
+          <span class="left">left</span>
+        </span>
+      </div>
+      <div class="meta">{safe_file} &nbsp;·&nbsp; {pages} page{'s' if pages != 1 else ''}</div>
+      <div class="track"><div class="fill"></div></div>
+    </div>
+    <script>
+    var t = {int(eta_seconds)};
+    var cells = document.querySelectorAll('#clock .digit');
+    function setDigit(el, ch){{
+      if (el.textContent === ch) return;
+      el.classList.remove('flip'); void el.offsetWidth; el.classList.add('flip');
+      setTimeout(function(){{ el.textContent = ch; }}, 165);
+    }}
+    function render(){{
+      var s = Math.max(0, t);
+      var m = Math.floor(s/60), ss = s%60;
+      var str = String(Math.min(99,m)).padStart(2,'0') + String(ss).padStart(2,'0');
+      cells.forEach(function(el, i){{ setDigit(el, str[i]); }});
+    }}
+    render(); setInterval(function(){{ if (t>0) t--; render(); }}, 1000);
+    </script>
+    """
+    _components.html(html, height=150)
 
 
 # ── Main page: heading + dropzone left, rubik's cube right ────────────────────
@@ -888,17 +1029,11 @@ try:
         from pypdf import PdfReader as _PdfReader
         _n_pages = len(_PdfReader(pdf_path).pages)
         # ~1.2 s/page empirical (camelot lattice+stream + cleaning)
-        _est_str = _fmt_eta(int(_n_pages * 1.2))
+        _eta_secs = int(_n_pages * 1.2)
 
-        status_ph.markdown(
-            status_html(
-                "reading the document",
-                f"{_nice_name(uploaded.name)} &nbsp;·&nbsp; "
-                f"{_n_pages} page{'s' if _n_pages != 1 else ''} &nbsp;·&nbsp; "
-                f"~{_est_str} estimated",
-            ),
-            unsafe_allow_html=True,
-        )
+        with status_ph:
+            status_countdown("reading the document", _nice_name(uploaded.name),
+                             _n_pages, _eta_secs)
 
         from backend.app.extract.table_extractor import extract_tables
         tables = extract_tables(pdf_path)

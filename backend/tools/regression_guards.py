@@ -1305,6 +1305,22 @@ def guard_reference_tables():
             check("hierarchy data rows preserved (not eaten as header)",
                   "Managers" in body or "Legislators" in body, body[:80])
 
+        # multi-page merge: a long concordance run collapses into ONE table
+        from backend.app.standardization.table_stitcher import stitch_tables
+        path2 = _slice(nco, 46, 60)
+        passed = [i for i in _pipeline(path2) if i["passed"]]
+        os.unlink(path2)
+        merged = stitch_tables([{"table_id": p["table_id"], "name": p["name"] or "",
+                                 "page": p["page"], "df": p["df"], "pages": [p["page"]]}
+                                for p in passed])
+        check("15 concordance pages merge into 1 table", len(merged) == 1,
+              f"got {len(merged)} tables")
+        if merged:
+            check("merged table keeps all rows (>=200)", len(merged[0]["df"]) >= 200,
+                  f"got {len(merged[0]['df'])} rows")
+            check("merged table stays 4 columns", merged[0]["df"].shape[1] == 4,
+                  f"got {merged[0]['df'].shape[1]}")
+
 
 def guard_title_recovery():
     """Guard AL — titles are recovered from a leading descriptive cell and from

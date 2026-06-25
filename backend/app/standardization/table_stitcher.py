@@ -231,4 +231,17 @@ def stitch_tables(items):
         if len(deduped) < len(df):
             it["df"] = deduped.reset_index(drop=True)
 
+    # Reference/lookup tables: now that pages are merged, infer semantic column
+    # names from the COMPLETE column content (code / level / name / state / …).
+    # Done post-merge because per-page inference is unstable (a page may lack
+    # the hierarchy rows that identify the "level" column). The archetype is read
+    # from the item flag (set pre-normalization, where codes are still strings)
+    # and falls back to live classification. Statistical tables are untouched.
+    from backend.app.profile.table_profiler import is_reference_table
+    from backend.app.standardization.column_namer import infer_reference_columns
+    for it in out:
+        is_ref = it.get("archetype") == "reference" or is_reference_table(it["df"])
+        if is_ref:
+            it["df"].columns = infer_reference_columns(it["df"])
+
     return out

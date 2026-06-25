@@ -162,6 +162,8 @@ def run(pdf, out_path, max_pages=40):
             df = split_panels(df)
             df = reassemble_wrapped_rows(df)
             df = translate_dataframe(df)
+            from backend.app.profile.table_profiler import classify_table
+            archetype = classify_table(df)["archetype"]
             h = detect_header_rows(df)
             cap = t.get("caption")
             nm = extract_table_name(df, h, translate_text(cap) if cap else None)
@@ -172,7 +174,8 @@ def run(pdf, out_path, max_pages=40):
             df = normalize_numeric_columns(df)
             s = validate_table(df)
             if s["passed"]:
-                passed.append({"table_id": t["table_id"], "name": nm, "page": t["page"], "df": df})
+                passed.append({"table_id": t["table_id"], "name": nm, "page": t["page"],
+                               "df": df, "archetype": archetype})
             else:
                 failed[s["reason"]] = failed.get(s["reason"], 0) + 1
         except Exception as e:
@@ -180,7 +183,8 @@ def run(pdf, out_path, max_pages=40):
     os.unlink(tmp.name)
 
     stitched = stitch_tables([{"table_id": i["table_id"], "name": i["name"] or "",
-                               "page": i["page"], "df": i["df"], "pages": [i["page"]]}
+                               "page": i["page"], "df": i["df"], "pages": [i["page"]],
+                               "archetype": i.get("archetype")}
                               for i in passed])
     tabs = [measure_table(s["df"], s["name"]) for s in stitched]
 

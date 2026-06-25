@@ -54,6 +54,8 @@ def _pipeline(pdf_path):
         df = split_panels(df)
         df = reassemble_wrapped_rows(df)
         df = translate_dataframe(df)
+        from backend.app.profile.table_profiler import classify_table
+        archetype = classify_table(df)["archetype"]
         h = detect_header_rows(df)
         cap = t.get("caption")
         nm = extract_table_name(df, h, translate_text(cap) if cap else None)
@@ -64,7 +66,8 @@ def _pipeline(pdf_path):
         df = normalize_numeric_columns(df)
         s = validate_table(df)
         items.append({"table_id": t["table_id"], "name": nm, "page": t["page"],
-                      "df": df, "passed": s["passed"], "reason": s["reason"]})
+                      "df": df, "passed": s["passed"], "reason": s["reason"],
+                      "archetype": archetype})
     return items
 
 
@@ -1311,15 +1314,21 @@ def guard_reference_tables():
         passed = [i for i in _pipeline(path2) if i["passed"]]
         os.unlink(path2)
         merged = stitch_tables([{"table_id": p["table_id"], "name": p["name"] or "",
-                                 "page": p["page"], "df": p["df"], "pages": [p["page"]]}
+                                 "page": p["page"], "df": p["df"], "pages": [p["page"]],
+                                 "archetype": p.get("archetype")}
                                 for p in passed])
         check("15 concordance pages merge into 1 table", len(merged) == 1,
               f"got {len(merged)} tables")
         if merged:
-            check("merged table keeps all rows (>=200)", len(merged[0]["df"]) >= 200,
-                  f"got {len(merged[0]['df'])} rows")
-            check("merged table stays 4 columns", merged[0]["df"].shape[1] == 4,
-                  f"got {merged[0]['df'].shape[1]}")
+            mdf = merged[0]["df"]
+            check("merged table keeps all rows (>=200)", len(mdf) >= 200,
+                  f"got {len(mdf)} rows")
+            check("merged table stays 4 columns", mdf.shape[1] == 4,
+                  f"got {mdf.shape[1]}")
+            # semantic column names inferred from content (not nco/value/label)
+            cols = [str(c) for c in mdf.columns]
+            check("semantic column names inferred", "code" in cols and "name" in cols,
+                  f"got {cols}")
 
 
 def guard_title_recovery():

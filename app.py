@@ -1031,9 +1031,20 @@ try:
         # ~1.2 s/page empirical (camelot lattice+stream + cleaning)
         _eta_secs = int(_n_pages * 1.2)
 
-        with status_ph:
-            status_countdown("reading the document", _nice_name(uploaded.name),
-                             _n_pages, _eta_secs)
+        try:
+            with status_ph:
+                status_countdown("reading the document", _nice_name(uploaded.name),
+                                 _n_pages, _eta_secs)
+        except Exception:
+            status_ph.markdown(
+                status_html(
+                    "reading the document",
+                    f"{_nice_name(uploaded.name)} &nbsp;·&nbsp; "
+                    f"{_n_pages} page{'s' if _n_pages != 1 else ''} &nbsp;·&nbsp; "
+                    f"~{_fmt_eta(_eta_secs)} estimated",
+                ),
+                unsafe_allow_html=True,
+            )
 
         from backend.app.extract.table_extractor import extract_tables
         tables = extract_tables(pdf_path)

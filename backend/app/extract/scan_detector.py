@@ -60,7 +60,13 @@ def analyze_pdf(path, max_pages=60):
             if i >= max_pages:
                 break
             pages_checked += 1
-            kind, _ = _page_kind(page)
+            try:
+                kind, _ = _page_kind(page)
+            except Exception:
+                # a page whose fonts/content stream fail to parse still HAS a
+                # text layer (pdfminer choked decoding it) — treat as text, not
+                # a scan, so a parser quirk never mislabels a digital PDF.
+                kind = "text"
             if kind == "text":
                 text += 1
             elif kind == "image":

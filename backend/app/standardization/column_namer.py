@@ -17,6 +17,12 @@ _DOTTED_CODE = re.compile(r"^\(?\d{1,4}\.\d{1,4}\)?$")
 _GROUP_CODE = re.compile(r"^\d{3,4}$")
 _YEAR = re.compile(r"^(19|20)\d{2}([-–/]\d{2,4})?$")
 _WORD = re.compile(r"[A-Za-z]{2,}")
+_PERCENT = re.compile(r"^\(?-?\d+(\.\d+)?\s*%\)?$")
+_DATE = re.compile(
+    r"^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$"                       # 01/02/2024
+    r"|^\d{1,2}\s*[-/ ]\s*[A-Za-z]{3,9}\s*[-/ ]\s*\d{2,4}$"    # 1 Jan 2024
+    r"|^[A-Za-z]{3,9}\s+\d{4}$",                               # January 2024
+)
 
 # hierarchy-level vocabulary (occupation / industry classification ladders)
 _LEVEL_WORDS = {
@@ -67,11 +73,32 @@ def infer_role(series):
     if year / n >= 0.6:
         return "year"
 
+    pct = sum(1 for v in vals if _PERCENT.match(v))
+    if pct / n >= 0.6:
+        return "percentage"
+
+    date = sum(1 for v in vals if _DATE.match(v))
+    if date / n >= 0.6:
+        return "date"
+
     multiword = sum(1 for v in vals if len(_WORD.findall(v)) >= 2)
     if multiword / n >= 0.5:
         return "name"
 
     return None
+
+
+# High-confidence roles safe to name ANY archetype's generic col_N column with.
+# "name" is excluded — too generic to assert on an arbitrary text column (the
+# existing "label" fallback covers that case).
+_CONFIDENT = {"code", "level", "state", "year", "percentage", "date"}
+
+
+def confident_role(series):
+    """A column role only when it is unambiguous enough to rename a generic
+    col_N column on any table (state, year, percentage, date, code, level)."""
+    role = infer_role(series)
+    return role if role in _CONFIDENT else None
 
 
 _GENERIC = re.compile(r"^(col(_\d+)?|value(_\d+)?|label(_\d+)?|nco(_\d+)?)$")

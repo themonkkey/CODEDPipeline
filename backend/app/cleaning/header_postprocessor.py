@@ -170,11 +170,18 @@ def clean_headers(df):
             cleaned = f"col_{i}"
         if _PHANTOM.fullmatch(cleaned):
             series = df.iloc[:, i]
+            # First try a high-confidence content role (state / year / percentage
+            # / date / code / level) — a meaningful name beats a generic one for
+            # any PDF, and a lost header is exactly where content must speak.
+            from backend.app.standardization.column_namer import confident_role
+            role = confident_role(series)
+            if role:
+                cleaned = role
             # A headerless but data-bearing value column ("col_3") is real data
             # whose header was lost upstream — name it "value" so it is
             # addressable instead of reading as extraction noise. Skip column 0
             # (the row-label/dimension column).
-            if i > 0 and _is_numeric_column(series):
+            elif i > 0 and _is_numeric_column(series):
                 cleaned = "value"
             # A headerless text column holding row labels (the dimension key,
             # usually column 0) — name it "label" for the same reason.

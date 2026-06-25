@@ -961,12 +961,25 @@ def guard_phantom_value_columns():
     check("named column 0 untouched", cols[0] == "region", f"got {cols}")
     check("all columns unique", len(set(cols)) == len(cols), f"got {cols}")
 
-    # an unnamed FIRST dimension column (the common phantom) -> label
+    # an unnamed first column of state names -> high-confidence role "state"
     df2 = pd.DataFrame(
         [["Andhra Pradesh", "1,234"], ["Bihar", "2,345"], ["Kerala", "3,456"]],
         columns=["col", "value"])
     cols2 = list(clean_headers(df2).columns)
-    check("unnamed first dimension col -> label", cols2[0] == "label", f"got {cols2}")
+    check("unnamed state column -> state", cols2[0] == "state", f"got {cols2}")
+
+    # an unnamed first text column with no confident role -> generic label
+    df3 = pd.DataFrame(
+        [["Alpha", "1,234"], ["Bravo and Co", "2,345"], ["Charlie", "3,456"]],
+        columns=["col", "value"])
+    cols3 = list(clean_headers(df3).columns)
+    check("unnamed generic text column -> label", cols3[0] == "label", f"got {cols3}")
+
+    # an unnamed column of percentages -> percentage
+    df4 = pd.DataFrame(
+        [["x", "12.3%"], ["y", "45.6%"], ["z", "78.9%"]], columns=["label", "col"])
+    cols4 = list(clean_headers(df4).columns)
+    check("unnamed percentage column -> percentage", "percentage" in cols4, f"got {cols4}")
 
 
 def guard_section_lift():

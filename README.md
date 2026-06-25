@@ -1,89 +1,117 @@
-# CODEDPipeline
+# Data Rubiks (CODEDPipeline)
 
-Extract statistical tables from government PDF reports and export them as clean CSVs — with a web UI.
+Extract data tables from any statistical PDF report and export them as clean,
+named, analysis-ready Excel workbooks and CSVs, through a Streamlit web app.
+
+Handles 600+ page government reports, bordered and borderless tables, bilingual
+Hindi-English sources, multi-page tables that flow across pages, and reference
+catalogues (code + text lookup tables) as well as statistical tables.
 
 ## Pipeline
 
 ```
-PDF → Camelot (lattice) → Clean → Detect Headers → Build Columns → Validate → CSV + Catalog
+PDF
+ → extract_tables        Camelot (lattice + stream) + pdfplumber, optional OCR recovery
+ → clean_dataframe       normalise whitespace / encoding (ftfy)
+ → split_panels          split side-by-side panels into separate tables
+ → reassemble_wrapped    rejoin wrapped rows
+ → translate_dataframe   Kruti-Dev / Devanagari → English
+ → classify_table        archetype: statistical | reference  (profiler)
+ → detect_header_rows    numeric-anchored, or record-aware for reference tables
+ → extract_table_name    title from caption / Table N / descriptive cell
+ → apply_headers         build column names (spanning, multi-level, reference modes)
+ → clean_headers         dedupe + content-based naming (state/year/code/percentage/…)
+ → merge_continuation    merge orphaned continuation values
+ → lift_section_rows     in-table section banners → a forward-filled `category` column
+ → normalize_numeric     strings → typed int/float
+ → validate_table        drop TOC / front-matter / prose / garbled / ghost fragments
+ → stitch_tables         merge multi-page tables; semantic names for reference tables
+ → excel_exporter        navigable workbook (TOC sheet) + per-table CSVs
 ```
 
-- Handles bilingual Hindi-English PDFs (strips romanized Hindi artifacts)
-- 184 / 186 tables extracted on sample DES report
-- Exports per-table CSVs + `table_catalog.csv` metadata
+## Key capabilities
+
+- **Document understanding** — a profiler (`backend/app/profile/table_profiler.py`)
+  classifies each table as `statistical` (numeric measures) or `reference`
+  (code + text catalogue) and routes header detection accordingly. Reference
+  tables (e.g. the NCO occupation concordance) keep their hierarchy rows as data
+  instead of having them eaten as headers.
+- **Cross-page merge** — tables that continue across pages are stitched into one
+  (e.g. a 200-page concordance → a single table).
+- **Content-based column naming** — when a header is lost, spanning, or blank,
+  the column is named from its content: `state`, `year`, `percentage`, `date`,
+  `code`, `level`, else `value` / `label`.
+- **OCR recovery** — font-corrupt Kruti-Dev tables are re-read by rendering the
+  region and OCR-ing the glyphs; unrecoverable ones are quarantined, not shipped
+  as clean.
+- **Quarantine** — TOC/index pages, prose paragraphs, staff lists, and garbled
+  tables are detected and set aside rather than exported as data.
 
 ## Stack
 
 | Layer | Tech |
 |---|---|
-| PDF extraction | Camelot (lattice) |
-| Cleaning | pandas + ftfy |
-| API | FastAPI + uvicorn |
-| Frontend | React + Vite |
+| PDF extraction | Camelot (lattice + stream), pdfplumber |
+| OCR (corrupt Hindi) | tesseract (hin+eng) via subprocess, pypdfium2 |
+| ML extraction (opt-in) | Docling / TableFormer — `DOCLING_ENABLED=1` (needs ~1 GB RAM) |
+| Cleaning / data | pandas, ftfy |
+| App | Streamlit (`app.py`) |
+| Export | openpyxl (Excel), CSV |
 
-## Project Structure
-
-```
-├── backend/
-│   ├── app/
-│   │   ├── main.py           # FastAPI app
-│   │   ├── extract/          # Camelot PDF → DataFrame
-│   │   ├── cleaning/         # Clean, detect headers, build columns
-│   │   ├── standardization/  # Table names, metadata catalog
-│   │   └── validation/       # Row/col minimum gate
-│   ├── data/
-│   │   ├── uploads/          # Uploaded PDFs (gitignored)
-│   │   └── jobs/             # Per-job CSV outputs (gitignored)
-│   └── tests/
-└── frontend/                 # React + Vite UI
-    └── src/
-        ├── App.jsx
-        └── App.css
-```
-
-## Setup
-
-### Backend
+## Setup & run
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install camelot-py ftfy pandas fastapi uvicorn python-multipart
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt        # camelot-py, pdfplumber, pandas, ftfy, streamlit, openpyxl, pypdf, docling …
+
+streamlit run app.py                    # open the local URL, drop a PDF
 ```
 
-### Frontend
+Optional high-accuracy table structure (heavier, local / paid tier):
 
 ```bash
-cd frontend
-npm install
+DOCLING_ENABLED=1 streamlit run app.py
 ```
 
-## Run
+## Quality & regression guards
 
-**Backend** (from project root):
-```bash
-source venv/bin/activate
-PYTHONPATH=. uvicorn backend.app.main:app --reload --port 8000
-```
-
-**Frontend** (in another terminal):
-```bash
-cd frontend
-npm run dev
-```
-
-Open `http://localhost:5173`, upload a PDF, get CSVs.
-
-## CLI (no UI)
+All behaviour is locked by regression guards. **Every guard must be GREEN before
+any commit.**
 
 ```bash
-PYTHONPATH=. python3 backend/tests/test_pipeline.py
+.venv/bin/python3 backend/tools/regression_guards.py        # full guard suite
 ```
 
-Outputs to `backend/data/exports/`.
+Corpus quality measurement:
 
-## Known Limitations
+```bash
+.venv/bin/python3 backend/tools/measure_all.py /tmp/out 40 4 # measure corpus (outdir, max_pages, workers)
+.venv/bin/python3 backend/tools/aggregate_quality.py /tmp/out
+```
 
-- No OCR — scanned (image-only) PDFs won't work
-- Optimised for MP DES district statistical reports
-- Multi-row merged headers partially reconstructed
+## Project structure
+
+```
+app.py                              # Streamlit UI + pipeline driver
+backend/app/
+  extract/        table_extractor, ocr_recovery, docling_extractor
+  cleaning/       universal_cleaner, panel_splitter, wrapped_row_reassembler,
+                  header_detector, header_builder, header_postprocessor,
+                  section_lifter, numeric_normalizer
+  profile/        table_profiler            # archetype classification
+  standardization/ table_name_extractor, column_namer, table_stitcher,
+                  metadata_builder, excel_exporter
+  translation/    hindi_translator, kruti_dev, corruption
+  validation/     table_validator
+backend/tools/
+  regression_guards.py   # all guards (run before every commit)
+  measure_quality.py / measure_all.py / aggregate_quality.py   # corpus scoring
+  diagnose_titles_cols.py # failure-case diagnostic
+```
+
+## Known limitations
+
+- Scanned image-only PDFs need OCR; only font-corrupt (not image) tables are recovered.
+- Very complex multi-level / borderless headers are best handled by the Docling path.
+- Untranslated Devanagari row labels can remain on some bilingual tables (data underneath is clean).

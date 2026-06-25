@@ -1251,6 +1251,61 @@ def guard_ghost_suppression():
     check("normal table kept", validate_table(normal)["passed"])
 
 
+def guard_reference_tables():
+    """Guard AM — the archetype profiler routes code+text lookup catalogues
+    (NCO concordance) to the reference header path: data rows preserved, stable
+    columns, no giant absorbed-header column names. Statistical tables unaffected."""
+    print("Guard AM — reference-table profiling + header (table_profiler)")
+    import pandas as pd
+    from backend.app.profile.table_profiler import classify_table, reference_header_rows
+
+    # synthetic reference frame (code + text, no measures)
+    ref = pd.DataFrame([
+        ["NCO 2015", "", "", "NCO 2004"],
+        ["Family", "1111", "Legislators and Senior Officials", ""],
+        ["", "1111.0100", "Elected Official, Union Government", "1111.10"],
+        ["", "1111.0200", "Elected Official, State Government", "1112.10"],
+        ["", "1111.0300", "Elected Official, Local Bodies", "1113.10"],
+        ["", "1112.0100", "Administrative Official, Union Government", "1121.10"],
+        ["", "1112.0200", "Diplomat and Foreign Service Officer", "1121.20"],
+    ])
+    c = classify_table(ref)
+    check("code+text catalogue -> reference", c["archetype"] == "reference", str(c))
+    check("reference header = 1 (NCO row only)", reference_header_rows(ref) == 1,
+          f"got {reference_header_rows(ref)}")
+
+    # statistical frame must NOT be reference
+    stat = pd.DataFrame([
+        ["State", "2021", "2022", "2023"],
+        ["Andhra Pradesh", "12.3", "13.4", "14.5"],
+        ["Bihar", "9.1", "9.8", "10.2"],
+        ["Kerala", "45.6", "47.1", "48.0"],
+    ])
+    check("numeric measures -> statistical", classify_table(stat)["archetype"] == "statistical",
+          str(classify_table(stat)))
+
+    # real PDF: NCO concordance pages keep data rows + stable 4 cols
+    nco = "/Users/thesinghaa/Downloads/national classification of occupations _vol i- 2015.pdf"
+    if os.path.exists(nco):
+        path = _slice(nco, 46, 48)
+        items = [i for i in _pipeline(path) if i["passed"]]
+        os.unlink(path)
+        check("NCO pages pass", len(items) >= 3, f"got {len(items)}")
+        if items:
+            shapes_4col = all(i["df"].shape[1] == 4 for i in items)
+            check("all NCO pages 4 columns", shapes_4col,
+                  f"shapes {[i['df'].shape for i in items]}")
+            # no giant absorbed-header column name (the old bug)
+            no_giant = all(max(len(str(c)) for c in i["df"].columns) < 40 for i in items)
+            check("no absorbed-header giant column names", no_giant,
+                  f"cols {[list(i['df'].columns) for i in items][:1]}")
+            # hierarchy data row preserved (Managers / a Family row present)
+            body = " ".join(" ".join(str(v) for v in r)
+                            for i in items for r in i["df"].head(3).values.tolist())
+            check("hierarchy data rows preserved (not eaten as header)",
+                  "Managers" in body or "Legislators" in body, body[:80])
+
+
 def guard_title_recovery():
     """Guard AL — titles are recovered from a leading descriptive cell and from
     captions with a leading enumerator, while genuine no-title tables stay None."""
@@ -1397,7 +1452,7 @@ if __name__ == "__main__":
                    guard_section_lift, guard_multilevel_header_merge,
                    guard_workbook_toc, guard_numeric_normalization,
                    guard_ghost_suppression, guard_toc_prose_quarantine,
-                   guard_title_recovery)
+                   guard_title_recovery, guard_reference_tables)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

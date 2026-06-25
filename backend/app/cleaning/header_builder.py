@@ -478,11 +478,44 @@ def _try_nfhs_headers(df, header_rows):
 _ALREADY_NAMED = re.compile(r"^(indicator|nfhs\d_)")
 
 
+def _apply_reference_headers(df, header_rows):
+    """Header application for reference/lookup tables (code+text catalogues).
+
+    Deliberately simple: take the leading header row(s) as column names per
+    column (joined when stacked), keep EVERY other row as data. No sub-header
+    absorption, no spanning forward-fill — those numeric-table heuristics are
+    what shred a hierarchical catalogue. Empty per-column headers are left blank
+    and resolved by clean_headers downstream (text -> label, code -> value)."""
+    header_rows = max(0, min(header_rows, len(df) - 1))
+    data_df = df.iloc[header_rows:].reset_index(drop=True)
+    if header_rows == 0:
+        data_df.columns = [f"col_{c}" for c in range(df.shape[1])]
+        return data_df
+    hdr = df.iloc[:header_rows]
+    columns = []
+    for c in range(df.shape[1]):
+        parts = []
+        for i in range(header_rows):
+            v = str(hdr.iloc[i, c]).strip() if c < hdr.shape[1] else ""
+            if v and v.lower() not in ("nan", "none"):
+                parts.append(v)
+        name = clean_header("_".join(parts)) if parts else f"col_{c}"
+        columns.append(name or f"col_{c}")
+    data_df.columns = columns
+    return data_df
+
+
 def apply_headers(df, header_rows):
 
     # Docling pre-names columns (nfhs6_urban, indicator, …) — skip header detection
     if sum(1 for c in list(df.columns)[:2] if _ALREADY_NAMED.match(str(c))) >= 1:
         return df
+
+    # Reference/lookup tables: route to the simple record-preserving applier so
+    # the numeric-table heuristics below never absorb code+text data rows.
+    from backend.app.profile.table_profiler import classify_table
+    if classify_table(df)["archetype"] == "reference":
+        return _apply_reference_headers(df, header_rows)
 
     # Gap C fix: never consume all rows — leave at least 1 data row
     if len(df) > 0:

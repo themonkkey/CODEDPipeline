@@ -35,6 +35,14 @@ def detect_header_rows(df):
     if df.empty:
         return 1
 
+    # Reference/lookup tables (code+text catalogues) have no numeric measure
+    # region to anchor the header/data boundary; the numeric-density scan below
+    # would read their leading hierarchy rows as multi-level header. Route them
+    # to a record-aware detector. Statistical tables fall through unchanged.
+    from backend.app.profile.table_profiler import classify_table, reference_header_rows
+    if classify_table(df)["archetype"] == "reference":
+        return reference_header_rows(df)
+
     max_scan = min(8, len(df))
 
     year_row = None

@@ -1,0 +1,201 @@
+<title>Data Rubiks — polish pass mockup</title>
+<style>
+:root{
+  --paper:#f6efdf; --paper-2:#ebdfc6; --card:#fffdf6;
+  --ink:#232c45; --navy:#273050; --navy-2:#1b2440;
+  --soft:#76809c; --blue:#5468a8; --blue-dim:#9fb0d8;
+  --gold:#c09a4a; --gold-soft:#e7d3a3;
+  --serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --sans:'Hanken Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --mono:'Space Mono',ui-monospace,Menlo,monospace;
+  --line:rgba(35,44,69,0.12);
+  --shadow:0 1px 2px rgba(35,44,69,.04),0 8px 24px rgba(35,44,69,.06);
+  --shadow-lg:0 2px 6px rgba(35,44,69,.06),0 18px 48px rgba(35,44,69,.10);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:var(--sans); color:var(--navy);
+  background:
+    radial-gradient(60% 45% at 12% 0%, rgba(192,154,74,.16), transparent 70%),
+    radial-gradient(55% 60% at 82% 38%, rgba(84,104,168,.10), transparent 70%),
+    radial-gradient(120% 90% at 50% 0%, #fdfaf1 0%, var(--paper) 55%, var(--paper-2) 100%) fixed;
+  min-height:100vh; padding:0 0 60px;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 40px}
+
+/* annotation */
+.note{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--gold);background:rgba(192,154,74,.10);border:1px solid rgba(192,154,74,.3);
+  border-radius:999px;padding:5px 14px;display:inline-block}
+.sectlbl{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--soft);margin:54px 0 14px;display:flex;align-items:center;gap:12px}
+.sectlbl::after{content:'';flex:1;height:1px;background:var(--line)}
+
+/* topbar */
+.topbar{display:flex;align-items:center;gap:12px;padding:22px 0 16px;border-bottom:1px solid var(--line)}
+.mark{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--ink),var(--blue));
+  display:grid;place-items:center;color:var(--gold);font-size:15px;box-shadow:var(--shadow)}
+.logo{font-family:var(--serif);font-size:18px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink)}
+.topbar .right{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;color:rgba(35,44,69,.45)}
+
+/* hero grid */
+.hero{display:grid;grid-template-columns:1.25fr 1fr;gap:48px;align-items:center;padding:44px 0 8px}
+.eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.24em;text-transform:uppercase;color:var(--soft);margin-bottom:18px}
+.htitle{font-family:var(--serif);font-weight:400;font-size:clamp(40px,5.2vw,60px);line-height:1.04;color:var(--ink);letter-spacing:-.01em}
+.htitle em{font-style:italic;color:var(--gold)}
+.rule{width:54px;height:3px;background:var(--gold);border-radius:2px;margin:22px 0}
+.hsub{color:var(--soft);font-size:15.5px;line-height:1.7;max-width:440px}
+
+/* dropzone */
+.drop{margin-top:26px;border:1.5px dashed rgba(35,44,69,.28);border-radius:16px;background:var(--card);
+  padding:30px 28px;display:flex;align-items:center;gap:18px;box-shadow:var(--shadow);
+  transition:border-color .2s,box-shadow .2s,transform .2s}
+.drop:hover{border-color:var(--gold);box-shadow:var(--shadow-lg);transform:translateY(-1px)}
+.drop .ic{width:46px;height:46px;border-radius:12px;background:rgba(84,104,168,.10);
+  display:grid;place-items:center;color:var(--blue);flex:none}
+.drop .t{font-size:15.5px;font-weight:600;color:var(--ink)}
+.drop .d{font-size:12.5px;color:var(--soft);margin-top:3px}
+.drop .btn{margin-left:auto;background:var(--ink);color:var(--paper);border:none;border-radius:9px;
+  padding:11px 20px;font-family:var(--sans);font-weight:600;font-size:13.5px;cursor:pointer;
+  transition:background .2s,transform .15s}
+.drop .btn:hover{background:var(--gold)}
+
+/* cube card */
+.cube{aspect-ratio:1/.9;border-radius:18px;border:1px solid var(--line);background:
+  linear-gradient(160deg,rgba(255,255,255,.6),rgba(235,223,198,.35));box-shadow:var(--shadow-lg);
+  display:grid;place-items:center;position:relative;overflow:hidden}
+.cube .grid{display:grid;grid-template-columns:repeat(3,38px);grid-template-rows:repeat(3,38px);gap:7px;
+  transform:rotateX(18deg) rotateZ(-18deg)}
+.cube .cell{border-radius:7px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.5),0 4px 10px rgba(35,44,69,.10)}
+.cube .lbl{position:absolute;bottom:16px;left:0;right:0;text-align:center;font-family:var(--mono);
+  font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--soft)}
+
+/* feature cards */
+.feats{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:14px}
+.feat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 22px 24px;
+  box-shadow:var(--shadow);position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
+.feat:hover{transform:translateY(-3px);box-shadow:var(--shadow-lg);border-color:rgba(192,154,74,.4)}
+.feat .n{font-family:var(--mono);font-size:11px;color:var(--gold);letter-spacing:.1em}
+.feat .ft{font-family:var(--serif);font-size:19px;color:var(--ink);margin:10px 0 8px}
+.feat .fd{font-size:13px;color:var(--soft);line-height:1.6}
+.feat::before{content:'';position:absolute;left:0;top:18px;bottom:18px;width:3px;border-radius:3px;
+  background:linear-gradient(var(--gold),var(--blue));opacity:0;transition:opacity .2s}
+.feat:hover::before{opacity:1}
+
+/* results */
+.resbar{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:16px 20px;box-shadow:var(--shadow);flex-wrap:wrap}
+.resbar .doc{font-family:var(--serif);font-size:18px;color:var(--ink)}
+.chip{font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--navy);
+  background:rgba(84,104,168,.10);border:1px solid rgba(84,104,168,.22);border-radius:999px;padding:4px 11px}
+.chip.gold{color:#7a5e1c;background:rgba(192,154,74,.14);border-color:rgba(192,154,74,.35)}
+.dl{margin-left:auto;display:flex;gap:10px}
+.dl button{border-radius:9px;padding:10px 16px;font-family:var(--sans);font-weight:600;font-size:13px;
+  cursor:pointer;border:1px solid var(--ink);background:var(--ink);color:var(--paper);transition:.18s}
+.dl button.ghost{background:transparent;color:var(--ink)}
+.dl button:hover{background:var(--gold);border-color:var(--gold);color:#fff}
+
+.tabs{display:flex;gap:10px;margin:22px 0 16px}
+.tab{font-family:var(--sans);font-size:12.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  color:rgba(35,44,69,.6);background:rgba(255,255,255,.55);border:1px solid var(--line);
+  border-radius:999px;padding:9px 22px}
+.tab.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+
+.tindex{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:18px 20px;
+  box-shadow:var(--shadow);display:flex;align-items:center;gap:16px;transition:.2s}
+.tcard:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg);border-color:rgba(192,154,74,.4)}
+.tcard .id{font-family:var(--mono);font-size:11px;color:var(--gold);min-width:34px}
+.tcard .nm{font-weight:600;font-size:14.5px;color:var(--ink)}
+.tcard .meta{font-size:12px;color:var(--soft);margin-top:3px}
+.tcard .arrow{margin-left:auto;color:var(--blue-dim);font-size:18px}
+
+table.prev{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
+  border-radius:12px;overflow:hidden;box-shadow:var(--shadow);font-size:13px;margin-top:4px}
+table.prev th{background:linear-gradient(var(--ink),var(--navy-2));color:var(--gold-soft);
+  font-family:var(--sans);font-weight:600;text-align:left;padding:11px 14px;font-size:12px;letter-spacing:.04em}
+table.prev td{padding:10px 14px;border-top:1px solid var(--line);color:var(--navy)}
+table.prev tr:nth-child(even) td{background:rgba(235,223,198,.28)}
+table.prev tr:hover td{background:rgba(192,154,74,.10)}
+.cap{font-family:var(--mono);font-size:10.5px;color:var(--soft);margin:18px 0 40px;letter-spacing:.04em}
+</style>
+
+<div class="wrap">
+  <div class="topbar">
+    <div class="mark">⬡</div>
+    <div class="logo">Data Rubiks</div>
+    <div class="right">PDF → structured tables</div>
+  </div>
+
+  <span class="note" style="margin-top:22px">Mockup · polish pass · fonts approximated (real app keeps Fraunces)</span>
+
+  <!-- LANDING -->
+  <div class="sectlbl">Landing — hero &amp; upload</div>
+  <div class="hero">
+    <div>
+      <div class="eyebrow">Statistical PDF · table extraction</div>
+      <div class="htitle">Solve any <em>data table</em>, page by page.</div>
+      <div class="rule"></div>
+      <div class="hsub">Drop a statistical report — 600+ pages, bordered or borderless, Hindi or English — and get clean, named, analysis-ready tables.</div>
+      <div class="drop">
+        <div class="ic">⬆</div>
+        <div>
+          <div class="t">Drop a PDF here</div>
+          <div class="d">or browse · up to 200 MB</div>
+        </div>
+        <button class="btn">Browse files</button>
+      </div>
+    </div>
+    <div class="cube">
+      <div class="grid" id="cubegrid"></div>
+      <div class="lbl">idle — awaiting document</div>
+    </div>
+  </div>
+
+  <div class="feats">
+    <div class="feat"><div class="n">#1</div><div class="ft">650+ pages, one go</div><div class="fd">Full statistical reports — every bordered or borderless table, stitched across pages.</div></div>
+    <div class="feat"><div class="n">#2</div><div class="ft">Hindi → English</div><div class="fd">Detects Kruti Dev &amp; Devanagari and translates tables automatically.</div></div>
+    <div class="feat"><div class="n">#3</div><div class="ft">Excel &amp; CSV, ready</div><div class="fd">Multi-page tables merged, columns named, bundled into clean workbooks.</div></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="sectlbl">Results — extracted tables</div>
+  <div class="resbar">
+    <div class="doc">national_classification_occupations.pdf</div>
+    <span class="chip">384 pages</span>
+    <span class="chip">52 tables</span>
+    <span class="chip gold">1 concordance · 1016 rows merged</span>
+    <div class="dl">
+      <button class="ghost">CSV ⌄</button>
+      <button>Download Excel</button>
+    </div>
+  </div>
+
+  <div class="tabs"><div class="tab on">Index</div><div class="tab">Preview</div><div class="tab">Set aside (4)</div></div>
+
+  <div class="tindex">
+    <div class="tcard"><div class="id">T1</div><div><div class="nm">Concordance Table — NCO 2015 / 2004</div><div class="meta">pp. 34–238 · 1016 rows · 4 cols · level · code · name · code_1</div></div><div class="arrow">→</div></div>
+    <div class="tcard"><div class="id">T2</div><div><div class="nm">Coding Structure NCO 2015</div><div class="meta">p. 25 · 5 rows · 3 cols · digits · representation · mapping</div></div><div class="arrow">→</div></div>
+    <div class="tcard"><div class="id">T3</div><div><div class="nm">Skill Level Aggregation</div><div class="meta">p. 23 · 12 rows · 6 cols</div></div><div class="arrow">→</div></div>
+    <div class="tcard"><div class="id">T4</div><div><div class="nm">India — Key Indicators</div><div class="meta">p. 6 · 28 rows · 5 cols · indicator · nfhs5_urban …</div></div><div class="arrow">→</div></div>
+  </div>
+
+  <div style="margin-top:22px">
+  <table class="prev">
+    <tr><th>level</th><th>code</th><th>name</th><th>code_1</th></tr>
+    <tr><td>Division</td><td>1</td><td>Managers</td><td></td></tr>
+    <tr><td>Family</td><td>1111</td><td>Legislators</td><td></td></tr>
+    <tr><td></td><td>1111.0100</td><td>Elected Official, Union Government</td><td>1111.10</td></tr>
+    <tr><td></td><td>1111.0200</td><td>Elected Official, State Government</td><td>1112.10</td></tr>
+    <tr><td></td><td>1111.0300</td><td>Elected Official, Local Bodies</td><td>1113.10</td></tr>
+  </table>
+  </div>
+  <div class="cap">Preview — Concordance Table · semantic column names inferred from content</div>
+</div>
+
+<script>
+  var cols=['#5468a8','#c09a4a','#273050','#9fb0d8','#76809c','#e7d3a3','#5468a8','#c09a4a','#273050'];
+  var g=document.getElementById('cubegrid');
+  for(var i=0;i<9;i++){var d=document.createElement('div');d.className='cell';d.style.background=cols[i];g.appendChild(d);}
+</script>

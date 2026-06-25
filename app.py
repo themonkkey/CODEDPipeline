@@ -1047,12 +1047,6 @@ try:
             )
 
         from backend.app.extract.table_extractor import extract_tables
-        tables = extract_tables(pdf_path)
-
-        if not tables:
-            st.error("No tables found in this PDF.")
-            st.stop()
-
         from backend.app.cleaning.header_builder import apply_headers
         from backend.app.cleaning.header_detector import detect_header_rows
         from backend.app.cleaning.header_postprocessor import clean_headers
@@ -1063,6 +1057,10 @@ try:
         from backend.app.standardization.table_name_extractor import extract_table_name
         from backend.app.translation.hindi_translator import translate_dataframe, translate_text
         from backend.app.validation.table_validator import validate_table
+        from backend.app.standardization.table_stitcher import _continues
+        import streamlit.components.v1 as _components
+        import gc
+        import shutil
 
         MSGS = [
             "cleaning rows",
@@ -1073,13 +1071,6 @@ try:
             "naming tables",
         ]
 
-        from backend.app.standardization.table_stitcher import stitch_tables
-        import streamlit.components.v1 as _components
-
-        import gc
-        import shutil
-        from backend.app.standardization.table_stitcher import _continues
-
         old_dir = st.session_state.get("workdir")
         if old_dir:
             shutil.rmtree(old_dir, ignore_errors=True)
@@ -1089,6 +1080,7 @@ try:
         st.session_state["workdir"] = str(workdir)
 
         flushed, failed = [], []
+        open_item = {"v": None}   # boxed so the helper can rebind it
 
         def _flush(item):
             """Write a finished table straight to disk and free its memory."""
@@ -1098,25 +1090,8 @@ try:
             item["df"] = None
             flushed.append(item)
 
-        open_item = None
-        t0 = time.time()
-        prev_pct = 0.0
-        step = max(1, len(tables) // 100)
-        for i, t in enumerate(tables):
-            if i % step == 0 or i == len(tables) - 1:
-                pct = 100 * (i + 1) / len(tables)
-                elapsed = time.time() - t0
-                eta = _fmt_eta(elapsed / (i + 1) * (len(tables) - i - 1)) if i else ""
-                with status_ph:
-                    _components.html(
-                        status_anim(
-                            MSGS[i % len(MSGS)],
-                            f"table {t['table_id']} · page {t['page']} · {i + 1} / {len(tables)}",
-                            prev_pct, pct, eta,
-                        ),
-                        height=110,
-                    )
-                prev_pct = pct
+        def _process(t):
+            """Clean one raw table and fold it into the incremental stitch."""
             try:
                 with redirect_stdout(io.StringIO()):
                     df = clean_dataframe(t["dataframe"])
@@ -1133,25 +1108,87 @@ try:
                 if s["passed"]:
                     it = {"table_id": t["table_id"], "name": nm,
                           "page": t["page"], "df": df, "pages": [t["page"]]}
-                    # incremental stitch: only the current table stays in memory
-                    if open_item is not None and _continues(open_item, it):
-                        open_item["df"] = pd.concat(
-                            [open_item["df"], it["df"]], ignore_index=True
-                        )
-                        open_item["pages"].append(it["page"])
-                        if not open_item["name"] and it["name"]:
-                            open_item["name"] = it["name"]
+                    oi = open_item["v"]
+                    if oi is not None and _continues(oi, it):
+                        oi["df"] = pd.concat([oi["df"], it["df"]], ignore_index=True)
+                        oi["pages"].append(it["page"])
+                        if not oi["name"] and it["name"]:
+                            oi["name"] = it["name"]
                     else:
-                        if open_item is not None:
-                            _flush(open_item)
-                        open_item = it
+                        if oi is not None:
+                            _flush(oi)
+                        open_item["v"] = it
                 else:
                     failed.append({"table": t["table_id"], "page": t["page"], "reason": s["reason"]})
             except Exception as e:
                 failed.append({"table": t["table_id"], "page": t["page"], "reason": str(e)})
 
-        if open_item is not None:
-            _flush(open_item)
+        def _progress(label_idx, sub, pct, prev):
+            with status_ph:
+                _components.html(
+                    status_anim(MSGS[label_idx % len(MSGS)], sub, prev, pct),
+                    height=110,
+                )
+
+        # ── Extract in PAGE BATCHES so Camelot never holds the whole document
+        #    in memory at once — reading all pages of a 300+ page report blows
+        #    past the hosting RAM limit and the container is OOM-killed (no
+        #    Python traceback, just a dead app). Each batch is read, cleaned,
+        #    flushed to disk and freed before the next, so peak memory stays
+        #    flat regardless of document length. Small PDFs use a single call.
+        _BATCH = 25
+        n_raw = 0
+        prev_pct = 0.0
+
+        if _n_pages <= 2 * _BATCH:
+            tabs = extract_tables(pdf_path)
+            n_tabs = len(tabs)
+            for i, t in enumerate(tabs):
+                if i % max(1, n_tabs // 60) == 0 or i == n_tabs - 1:
+                    pct = 100 * (i + 1) / max(n_tabs, 1)
+                    _progress(i, f"table {i + 1} / {n_tabs}", pct, prev_pct)
+                    prev_pct = pct
+                _process(t)
+                n_raw += 1
+            del tabs
+            gc.collect()
+        else:
+            from pypdf import PdfReader as _PdfReaderB, PdfWriter as _PdfWriterB
+            reader = _PdfReaderB(pdf_path)
+            gtid = 0
+            for bi, lo in enumerate(range(0, _n_pages, _BATCH)):
+                hi = min(lo + _BATCH, _n_pages)
+                pct = 100 * hi / _n_pages
+                _progress(bi, f"pages {hi} / {_n_pages} &nbsp;·&nbsp; "
+                          f"{len(flushed)} tables so far", pct, prev_pct)
+                prev_pct = pct
+                w = _PdfWriterB()
+                for p in range(lo, hi):
+                    w.add_page(reader.pages[p])
+                btmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                w.write(btmp)
+                btmp.close()
+                try:
+                    batch_tabs = extract_tables(btmp.name)
+                except Exception:
+                    batch_tabs = []
+                finally:
+                    os.unlink(btmp.name)
+                for t in batch_tabs:
+                    t["page"] = int(t.get("page", 1)) + lo   # local → global page
+                    t["table_id"] = gtid
+                    gtid += 1
+                    _process(t)
+                    n_raw += 1
+                del batch_tabs
+                gc.collect()
+
+        if open_item["v"] is not None:
+            _flush(open_item["v"])
+
+        if n_raw == 0:
+            st.error("No tables found in this PDF.")
+            st.stop()
 
         if not flushed:
             st.warning("All tables failed validation.")
@@ -1195,8 +1232,7 @@ try:
         xlsx_path.write_bytes(_buf.getbuffer())
         del _buf
 
-        n_raw_tables = len(tables)
-        del tables
+        n_raw_tables = n_raw
         gc.collect()
 
         st.session_state["results"] = {

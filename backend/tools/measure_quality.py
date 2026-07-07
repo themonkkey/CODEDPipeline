@@ -49,7 +49,11 @@ def _is_composite(col):
         return True
     return len(parts) >= 2 and (bool(_SUBLABEL.search(col)) or bool(YEAR.search(col)))
 DEVA = re.compile(r"[ऀ-ॿ]")
-FALLBACK_NAME = re.compile(r"^Table\s+\d+\s+\(p\.")
+# "no real title" placeholders from the two call sites that feed measure_table:
+# single-PDF measure_quality's own "Table N (p.NNN)" stand-in, and the batch
+# panel builder's "(N-col <archetype> table)" stand-in (table_signature.py) —
+# both mean "we never found a caption", so both count as unnamed.
+FALLBACK_NAME = re.compile(r"^Table\s+\d+\s+\(p\.|^\(\d+-col\s")
 
 
 def _is_num(v):

@@ -32,6 +32,13 @@ def _strong_title(name):
     return bool(name) and bool(_STRONG_TITLE.match(str(name).strip()))
 
 
+def normalize_colname(c):
+    """Letters+digits only, lowercased — the canonical form used to compare
+    column names across word-wrap and punctuation noise. Shared by the
+    within-PDF continuation test and the cross-PDF signature/grouping logic."""
+    return re.sub(r"[^a-z0-9]", "", str(c).lower())
+
+
 _FALLBACK_NAME = re.compile(r"^(col(_\d+)?|_ext_\d+)$")
 
 
@@ -91,8 +98,8 @@ def _continues(prev, cur):
     # "resolved within t" vs "brought forward" / "resolved within
     # time") — compare letters-only and tolerate truncation: a column
     # matches when one normalised name is a prefix of the other
-    norm_a = [re.sub(r"[^a-z0-9]", "", c.lower()) for c in cols_a]
-    norm_b = [re.sub(r"[^a-z0-9]", "", c.lower()) for c in cols_b]
+    norm_a = [normalize_colname(c) for c in cols_a]
+    norm_b = [normalize_colname(c) for c in cols_b]
 
     def _col_match(x, y):
         if x == y:

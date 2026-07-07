@@ -7,6 +7,12 @@ try:
 except ImportError:
     pdfplumber = None
 
+from backend.app.extract.quality import (
+    LOW_QUALITY_THRESHOLD,
+    REVIEW_THRESHOLD,
+    score_table,
+)
+
 
 def _is_crushed(df):
     """
@@ -498,12 +504,29 @@ def _recover_stream_header(table, df, plumber_pdf):
         return df
 
 
+def _ocr_extract_grid(table, plumber_pdf):
+    """Low-level page-render recovery shared by the corruption-triggered path
+    below and Loop Spec 1's quality-triggered retry (a scanned page where
+    lattice AND stream both stayed low-quality). Returns a DataFrame, or None
+    on any failure / when there is nothing to render."""
+    if plumber_pdf is None:
+        return None
+    try:
+        from backend.app.extract.ocr_recovery import recover_table
+        import pandas as pd
+        page = plumber_pdf.pages[int(table.page) - 1]
+        grid = recover_table(page, table)
+        if not grid:
+            return None
+        return pd.DataFrame(grid)
+    except Exception:
+        return None
+
+
 def _ocr_recover_if_corrupt(table, df, plumber_pdf):
     """When a table's text layer is font-corrupted (Kruti soup / mangled
     Devanagari), rebuild it by OCR-ing the rendered glyphs. Returns
     (dataframe, recovered?). Best-effort: any failure keeps the original df."""
-    if plumber_pdf is None:
-        return df, False
     try:
         from backend.app.translation.corruption import corruption_score
         before, kind = corruption_score(df)
@@ -515,13 +538,9 @@ def _ocr_recover_if_corrupt(table, df, plumber_pdf):
         # (e.g. PLFS) have kind="deva" and must NOT be OCR'd.
         if kind != "kruti":
             return df, False
-        from backend.app.extract.ocr_recovery import recover_table
-        import pandas as pd
-        page = plumber_pdf.pages[int(table.page) - 1]
-        grid = recover_table(page, table)
-        if not grid:
+        rdf = _ocr_extract_grid(table, plumber_pdf)
+        if rdf is None:
             return df, False
-        rdf = pd.DataFrame(grid)
         after, _ = corruption_score(rdf)
         if after < before:
             return rdf, True
@@ -530,13 +549,131 @@ def _ocr_recover_if_corrupt(table, df, plumber_pdf):
     return df, False
 
 
-def extract_tables(pdf_path):
+def _process_stream_table(table, plumber_pdf):
+    """Validate + repair one camelot stream table. Shared by the blanket
+    stream fallback (pages where lattice found nothing at all) and Loop
+    Spec 1's per-table stream retry (a page where lattice DID find a table
+    but it scored low). Returns (df, ocr_recovered?) or None when the table
+    fails the density/confidence gates that keep stream from picking up
+    pseudo-tables on prose pages."""
+    try:
+        df = table.df
+        report = table.parsing_report
+        accuracy = report.get("accuracy", 0)
+        whitespace = report.get("whitespace", 100)
+    except Exception:
+        return None
+
+    if accuracy < 80 or whitespace > 60:
+        return None
+
+    if len(df) < 4 or len(df.columns) < 3:
+        return None
+
+    # Recover headers camelot's stream flavor dropped: when the top rows are
+    # empty (only a "1 2 3" index band survives), read the column labels
+    # positionally from pdfplumber and prepend them.
+    df = _recover_stream_header(table, df, plumber_pdf)
+    df, ocr = _ocr_recover_if_corrupt(table, df, plumber_pdf)
+    return df, ocr
+
+
+def _stream_retry(pdf_path, page, plumber_pdf):
+    """Loop Spec 1, strategy 2: re-read a single page with stream flavor when
+    lattice succeeded but scored below LOW_QUALITY_THRESHOLD. A page can hold
+    more than one stream table; keep the best-scoring one so the retry can
+    never do worse than picking nothing. Returns (df, score, ocr?) or None."""
+    best = None
+    for table in _read(pdf_path, str(page), "stream"):
+        result = _process_stream_table(table, plumber_pdf)
+        if result is None:
+            continue
+        df, ocr = result
+        score = score_table(df)["score"]
+        if best is None or score > best[1]:
+            best = (df, score, ocr)
+    return best
+
+
+def _consider(attempts, best, candidate_df, candidate_score, candidate_strategy):
+    """Record one extraction attempt and apply Loop Spec 1's no-progress
+    rule: a candidate only becomes the new best when it STRICTLY beats the
+    best score seen so far, so a worse (or tied) retry can never replace a
+    better earlier attempt. `best` is {"df", "score", "strategy"}; returns
+    the (possibly unchanged) best. Pure / deterministic — no I/O — so the
+    max-score guarantee is directly unit-testable."""
+    attempts.append({"strategy": candidate_strategy, "score": candidate_score})
+    if candidate_score > best["score"]:
+        return {"df": candidate_df, "score": candidate_score, "strategy": candidate_strategy}
+    return best
+
+
+def _build_kept_item(page, df, bbox, attempts, best_score, best_strategy):
+    """Loop Spec 1's kept-table record. A table is NEVER dropped for scoring
+    low: one that stayed under LOW_QUALITY_THRESHOLD after every strategy was
+    tried is still kept here, flagged low_quality (and review_needed if it
+    never even reached REVIEW_THRESHOLD) so a downstream consumer can
+    quarantine / escalate it instead of it silently vanishing."""
+    return {
+        "page": page,
+        "dataframe": df,
+        "bbox": bbox,
+        "flavor": best_strategy,
+        "attempts": attempts,
+        "best_score": best_score,
+        "low_quality": best_score < LOW_QUALITY_THRESHOLD,
+        "review_needed": best_score < REVIEW_THRESHOLD,
+    }
+
+
+def _normalize_page_scope(pages):
+    """Loop Spec 4 page-scoping: turn the `pages` argument of extract_tables()
+    into (camelot_pages_str, allowed_page_set). `pages=None` means "no scope"
+    (camelot_pages_str="all", allowed=None) — the default, so every existing
+    caller's behavior is byte-identical. Accepts a single page number, an
+    iterable of page numbers, or an already camelot-formatted string
+    ("3", "3,7"). Range tokens ("3-9") are passed through to camelot as-is,
+    but conservatively fall back to allowed=None (no post-filtering) since we
+    cannot cheaply enumerate a range's members here — better to over-include
+    than to silently drop a page, matching Loop Spec 1's never-drop ethos."""
+    if pages is None:
+        return "all", None
+    if isinstance(pages, int):
+        pages = [pages]
+    if isinstance(pages, str):
+        tokens = [t.strip() for t in pages.split(",") if t.strip()]
+        allowed, all_simple = set(), True
+        for t in tokens:
+            if t.isdigit():
+                allowed.add(int(t))
+            else:
+                all_simple = False
+        return pages, (allowed if all_simple else None)
+    ints = sorted({int(p) for p in pages})
+    return ",".join(str(p) for p in ints), set(ints)
+
+
+def extract_tables(pdf_path, pages=None):
+    """
+    pages: optional page scope (Loop Spec 4). None (default) processes the
+    whole document — every pre-existing caller passes only pdf_path, so this
+    is fully backward compatible. Pass a single page number, an iterable of
+    page numbers, or a camelot-formatted page string to restrict BOTH the
+    lattice pass and the stream fallback to just those pages. Used by
+    recheck_quarantine.py so re-verifying a handful of quarantined pages does
+    not re-run camelot over an entire multi-hundred-page document.
+    """
     import os
     _check_pdf_magic(pdf_path)
 
+    pages_spec, allowed_pages = _normalize_page_scope(pages)
+
     if os.getenv("DOCLING_ENABLED", "").lower() in ("1", "true", "yes"):
         from backend.app.extract.docling_extractor import extract_tables_docling
-        return extract_tables_docling(pdf_path)
+        results = extract_tables_docling(pdf_path)
+        if allowed_pages is not None:
+            results = [r for r in results if r.get("page") in allowed_pages]
+        return results
 
     plumber_pdf = None
 
@@ -554,35 +691,82 @@ def extract_tables(pdf_path):
     kept = []
     good_lattice_pages = set()
 
-    for table in _read(pdf_path, "all", "lattice"):
+    # Loop Spec 1, strategy 3 (OCR) is only worth trying on pages the scan
+    # detector actually flags as image-only; computing that is a full-PDF
+    # pass, so do it at most once and only when a table first needs it.
+    _scan_cache = {}
+
+    def _is_scanned_page(page):
+        if "pages" not in _scan_cache:
+            try:
+                from backend.app.extract.scan_detector import analyze_pdf
+                info = analyze_pdf(pdf_path)
+                _scan_cache["pages"] = set(info.get("scanned_page_numbers") or [])
+            except Exception:
+                _scan_cache["pages"] = set()
+        return page in _scan_cache["pages"]
+
+    for table in _read(pdf_path, pages_spec, "lattice"):
 
         try:
             page = int(table.page)
-            df = table.df
+            raw_df = table.df
         except Exception:
             continue
 
-        if _is_crushed(df):
+        if _is_crushed(raw_df):
             continue
 
         good_lattice_pages.add(page)
         df = _repair_header_positionally(table, plumber_pdf)
         df = _repair_crushed_header_rows(df)
         df, ocr = _ocr_recover_if_corrupt(table, df, plumber_pdf)
-        kept.append({
-            "page": page,
-            "dataframe": df,
-            "bbox": getattr(table, "_bbox", None),
-            "flavor": "ocr" if ocr else "lattice",
-        })
+
+        # extract-verify-re-extract: lattice "succeeding" only means it found
+        # SOME grid, not a good one (garbage col/col_2 columns still score
+        # low). Retry with other strategies, capped at 3 attempts total, and
+        # only ever keep the max-scoring variant so a worse retry can never
+        # replace a better earlier attempt.
+        attempts = []
+        lattice_strategy = "ocr" if ocr else "lattice"
+        best = {"df": df, "score": score_table(df)["score"], "strategy": lattice_strategy}
+        attempts.append({"strategy": lattice_strategy, "score": best["score"]})
+
+        if best["score"] < LOW_QUALITY_THRESHOLD and len(attempts) < 3:
+            retry = _stream_retry(pdf_path, page, plumber_pdf)
+            if retry is not None:
+                stream_df, stream_score, stream_ocr = retry
+                stream_strategy = "ocr" if stream_ocr else "stream"
+                best = _consider(attempts, best, stream_df, stream_score, stream_strategy)
+
+        if best["score"] < LOW_QUALITY_THRESHOLD and len(attempts) < 3 and _is_scanned_page(page):
+            ocr_df = _ocr_extract_grid(table, plumber_pdf)
+            if ocr_df is not None:
+                ocr_score = score_table(ocr_df)["score"]
+                best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
+
+        kept.append(_build_kept_item(
+            page, best["df"], getattr(table, "_bbox", None),
+            attempts, best["score"], best["strategy"],
+        ))
 
     # Stream fallback: pages where lattice found nothing usable
-    # (borderless tables, or tables without row separator lines).
+    # (borderless tables, or tables without row separator lines). This is a
+    # single-strategy attempt (no lattice score to compare against), so it
+    # is recorded the same way a lone attempt always is.
+    #
+    # Page scope (Loop Spec 4): when the caller restricted extract_tables()
+    # to specific pages, the fallback must only consider THOSE pages, never
+    # the whole document — otherwise a scoped call would still pay for a
+    # full-document stream pass, defeating the point of scoping.
     if total_pages is not None:
 
+        candidate_pages = (
+            range(1, total_pages + 1) if allowed_pages is None else sorted(allowed_pages)
+        )
         missing = [
             str(p)
-            for p in range(1, total_pages + 1)
+            for p in candidate_pages
             if p not in good_lattice_pages
         ]
 
@@ -594,34 +778,37 @@ def extract_tables(pdf_path):
 
                 try:
                     page = int(table.page)
-                    df = table.df
-
-                    report = table.parsing_report
-                    accuracy = report.get("accuracy", 0)
-                    whitespace = report.get("whitespace", 100)
                 except Exception:
                     continue
 
-                # stream "finds" pseudo-tables on prose pages;
-                # keep only confident, dense ones
-                if accuracy < 80 or whitespace > 60:
+                result = _process_stream_table(table, plumber_pdf)
+                if result is None:
                     continue
 
-                if len(df) < 4 or len(df.columns) < 3:
-                    continue
+                stream_df, ocr = result
+                stream_strategy = "ocr" if ocr else "stream"
+                attempts = []
+                best = {"df": stream_df, "score": score_table(stream_df)["score"], "strategy": stream_strategy}
+                attempts.append({"strategy": stream_strategy, "score": best["score"]})
 
-                # Recover headers camelot's stream flavor dropped: when the top
-                # rows are empty (only a "1 2 3" index band survives), read the
-                # column labels positionally from pdfplumber and prepend them.
-                df = _recover_stream_header(table, df, plumber_pdf)
-                df, ocr = _ocr_recover_if_corrupt(table, df, plumber_pdf)
+                # lattice already ran (the "all pages, lattice" pass at the
+                # top of this function) and found nothing keepable on this
+                # page, so it counts as a spent attempt; stream is attempt 2.
+                # A scanned page with a still-low stream score gets the 3rd.
+                if (
+                    best["score"] < LOW_QUALITY_THRESHOLD
+                    and len(attempts) < 3
+                    and _is_scanned_page(page)
+                ):
+                    ocr_df = _ocr_extract_grid(table, plumber_pdf)
+                    if ocr_df is not None:
+                        ocr_score = score_table(ocr_df)["score"]
+                        best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
 
-                kept.append({
-                    "page": page,
-                    "dataframe": df,
-                    "bbox": getattr(table, "_bbox", None),
-                    "flavor": "ocr" if ocr else "stream",
-                })
+                kept.append(_build_kept_item(
+                    page, best["df"], getattr(table, "_bbox", None),
+                    attempts, best["score"], best["strategy"],
+                ))
 
     # Expand side-by-side independent tables (two narrow tables printed next to
     # each other, extracted as one wide frame) into separate tables. Done here,
@@ -651,6 +838,13 @@ def extract_tables(pdf_path):
             "dataframe": t["dataframe"],
             "caption": _extract_caption(plumber_pdf, t["page"], t["bbox"]),
             "flavor": t["flavor"],
+            # Loop Spec 1 item flags (same convention as table_profiler's
+            # "archetype": extra per-table metadata threaded alongside the
+            # dataframe, not a parallel structure keyed by table_id).
+            "attempts": t.get("attempts", [{"strategy": t["flavor"], "score": None}]),
+            "best_score": t.get("best_score"),
+            "low_quality": t.get("low_quality", False),
+            "review_needed": t.get("review_needed", False),
         })
 
     # Chapter/section carry-forward: a governing heading ("Chapter-2C Kidnapping

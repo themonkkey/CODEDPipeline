@@ -9,6 +9,45 @@ import os
 import sys
 
 
+def compute_corpus(all_tables, failed_reasons=None, pdfs_measured=0, pdfs_errored=0,
+                    ocr_recovered_total=0):
+    """The corpus-rollup formulas, factored out of `main()` so any caller with
+    an in-memory list of `measure_table()` dicts (not just a directory of
+    per-PDF JSON files) can reuse the SAME scoring — e.g. batch_quality_gate.py
+    grading a batch's assembled panels right after assemble_panels finishes.
+    Returns the corpus dict without `per_pdf` (caller's concern, not ours)."""
+    failed_reasons = failed_reasons or {}
+    T = len(all_tables) or 1
+    def frac(pred):
+        return round(sum(1 for t in all_tables if pred(t)) / T, 3)
+    return {
+        "pdfs_measured": pdfs_measured,
+        "pdfs_errored": pdfs_errored,
+        "total_tables": len(all_tables),
+        "failed_reasons": failed_reasons,
+        "ghosts_dropped_total": sum(v for k, v in failed_reasons.items() if k == "index_legend_only"),
+        "garbled_quarantined_total": sum(v for k, v in failed_reasons.items() if k == "garbled_source"),
+        "ocr_recovered_total": ocr_recovered_total,
+        # ---- structural / columns
+        "tables_zero_coln_frac": frac(lambda t: t["col_n"] == 0),
+        "mean_col_n_frac": round(sum(t["col_n_frac"] for t in all_tables) / T, 3),
+        "tables_with_dup_cols_frac": frac(lambda t: t["dup_cols"] > 0),
+        "tables_with_orphans_frac": frac(lambda t: t["orphan_rows"] > 0),
+        # ---- headings / titles
+        "named_frac": frac(lambda t: t["named"]),
+        # ---- sub-headings / multi-level + sections
+        "category_frac": frac(lambda t: t["has_category"]),
+        "composite_frac": frac(lambda t: t["composite_cols"] > 0),
+        # ---- cell content / numeric readiness
+        "mean_numeric_value_frac": round(sum(t["numeric_value_frac"] for t in all_tables) / T, 3),
+        "mean_numeric_readiness": (lambda r: round(sum(r) / len(r), 3) if r else None)(
+            [t["numeric_readiness"] for t in all_tables if t.get("numeric_readiness") is not None]),
+        "tables_with_numeric_cols_frac": frac(lambda t: t["numeric_cols"] > 0),
+        # ---- hindi leakage
+        "tables_with_deva_frac": frac(lambda t: t["deva_rows"] > 0),
+    }
+
+
 def main(indir, out=None):
     files = [f for f in glob.glob(os.path.join(indir, "*.json"))
              if not os.path.basename(f).startswith("_")]
@@ -33,36 +72,10 @@ def main(indir, out=None):
             "ghosts_dropped", "total_orphan_rows", "tables_with_dup_cols",
             "tables_with_numeric_cols", "tables_with_deva")})
 
-    T = len(all_tables) or 1
-    def frac(pred):
-        return round(sum(1 for t in all_tables if pred(t)) / T, 3)
-    corpus = {
-        "pdfs_measured": len(files),
-        "pdfs_errored": sum(1 for p in per_pdf if p.get("error")),
-        "total_tables": len(all_tables),
-        "failed_reasons": failed_reasons,
-        "ghosts_dropped_total": sum(v for k, v in failed_reasons.items() if k == "index_legend_only"),
-        "garbled_quarantined_total": sum(v for k, v in failed_reasons.items() if k == "garbled_source"),
-        "ocr_recovered_total": ocr_recovered_total,
-        # ---- structural / columns
-        "tables_zero_coln_frac": frac(lambda t: t["col_n"] == 0),
-        "mean_col_n_frac": round(sum(t["col_n_frac"] for t in all_tables) / T, 3),
-        "tables_with_dup_cols_frac": frac(lambda t: t["dup_cols"] > 0),
-        "tables_with_orphans_frac": frac(lambda t: t["orphan_rows"] > 0),
-        # ---- headings / titles
-        "named_frac": frac(lambda t: t["named"]),
-        # ---- sub-headings / multi-level + sections
-        "category_frac": frac(lambda t: t["has_category"]),
-        "composite_frac": frac(lambda t: t["composite_cols"] > 0),
-        # ---- cell content / numeric readiness
-        "mean_numeric_value_frac": round(sum(t["numeric_value_frac"] for t in all_tables) / T, 3),
-        "mean_numeric_readiness": (lambda r: round(sum(r) / len(r), 3) if r else None)(
-            [t["numeric_readiness"] for t in all_tables if t.get("numeric_readiness") is not None]),
-        "tables_with_numeric_cols_frac": frac(lambda t: t["numeric_cols"] > 0),
-        # ---- hindi leakage
-        "tables_with_deva_frac": frac(lambda t: t["deva_rows"] > 0),
-        "per_pdf": per_pdf,
-    }
+    pdfs_errored = sum(1 for p in per_pdf if p.get("error"))
+    corpus = compute_corpus(all_tables, failed_reasons, len(files), pdfs_errored,
+                             ocr_recovered_total)
+    corpus["per_pdf"] = per_pdf
     brief = {k: v for k, v in corpus.items() if k != "per_pdf"}
     print(json.dumps(brief, indent=1))
     if out:

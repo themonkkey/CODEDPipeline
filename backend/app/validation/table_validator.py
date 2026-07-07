@@ -238,25 +238,13 @@ def validate_table(df):
     rows = len(df)
     cols = len(df.columns)
 
-    #
-    # Keep every real table, even tiny or headingless ones.
-    # Reject only degenerate shapes that cannot be a table.
-    #
-
-    #
-    # A single data row is still a table (e.g. a KPI strip:
-    # header row of years + one row of totals).
-    #
-
     if rows < 1:
-
         return {
             "passed": False,
             "reason": "too_few_rows"
         }
 
     if cols < 2:
-
         return {
             "passed": False,
             "reason": "too_few_columns"

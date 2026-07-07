@@ -83,7 +83,8 @@ def clean_column_name(col):
     ]
 
     # cap runaway names (multi-row headers concatenate badly)
-    parts = list(dict.fromkeys(plausible))[:6]
+    # 4 words is enough for a meaningful name; beyond that it's concatenation garbage
+    parts = list(dict.fromkeys(plausible))[:4]
 
     if years:
         for y in years:

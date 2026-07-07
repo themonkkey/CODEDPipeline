@@ -96,6 +96,14 @@ def run_pipeline(job_id: str, pdf_path: str):
                         "table": table["table_id"],
                         "page": table["page"],
                         "reason": status["reason"],
+                        # Loop Spec 1: extract_tables()'s own retry record —
+                        # a table dropped here (validate_table failure) was
+                        # never silently given up on at the extraction layer;
+                        # this shows what was tried and the best it scored.
+                        "best_score": table.get("best_score"),
+                        "strategies_tried": ",".join(
+                            a["strategy"] for a in table.get("attempts", [])
+                        ),
                     }
                 )
         except Exception as e:
@@ -104,6 +112,10 @@ def run_pipeline(job_id: str, pdf_path: str):
                     "table": table["table_id"],
                     "page": table["page"],
                     "reason": str(e),
+                    "best_score": table.get("best_score"),
+                    "strategies_tried": ",".join(
+                        a["strategy"] for a in table.get("attempts", [])
+                    ),
                 }
             )
 

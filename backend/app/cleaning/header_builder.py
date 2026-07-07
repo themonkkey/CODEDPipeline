@@ -123,8 +123,14 @@ def _looks_english(word):
 
     bare = re.sub(r"[^A-Za-z]", "", word)
 
-    if not bare or not _has_vowel(bare):
+    if not bare:
         return False
+
+    # Vowel-less ALL-CAPS acronyms are real headers (GDP, GFCF, NNP,
+    # PS+SS) — Kruti soup is lowercase or mixed-case, never a short
+    # clean acronym. Everything else still requires a vowel.
+    if not _has_vowel(bare):
+        return bare.isupper() and 2 <= len(bare) <= 6
 
     if bare.lower() in ALLOWED_LOWER:
         return True
@@ -148,10 +154,31 @@ def extract_english(text):
 
     text = str(text)
 
+    # Rejoin hyphenated line-wraps inside a header cell ("Valu- ables",
+    # "Discrep- ancies") before word filtering — the stranded lowercase
+    # tail otherwise fails the Titlecase test and truncates the name.
+    # Requires hyphen + whitespace so year spans ("2020-21") are untouched.
+    text = re.sub(r"([A-Za-z])-\s+([a-z])", r"\1\2", text)
+
     matches = re.findall(
         r"[A-Za-z][A-Za-z\s&().,\-/]{2,}",
         text
     )
+
+    # Anchor pass: count words the strict filter already accepts. A cell with
+    # >=2 accepted words is demonstrably English prose ("Export of goods and
+    # services"), so its remaining lowercase vowel-words are real vocabulary,
+    # not Kruti soup — keep them. Cells without anchors keep the strict rule.
+    all_words = [w for chunk in matches for w in re.split(r"[\s/]+", chunk) if w]
+    anchors = sum(1 for w in all_words if _looks_english(w))
+
+    def _keep(w):
+        if _looks_english(w):
+            return True
+        if anchors < 2:
+            return False
+        bare = re.sub(r"[^A-Za-z]", "", w)
+        return len(bare) >= 3 and bare.islower() and _has_vowel(bare)
 
     filtered = []
     for chunk in matches:
@@ -161,7 +188,7 @@ def extract_english(text):
         # real header to col_N. Splitting recovers each Titlecase part.
         words = [
             w for w in re.split(r"[\s/]+", chunk)
-            if _looks_english(w)
+            if _keep(w)
         ]
         if words:
             filtered.append(" ".join(words))

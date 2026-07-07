@@ -847,11 +847,22 @@ def guard_ocr_recovery():
 
 def guard_ghost_on_census():
     """Guard AJ — ghost suppression positively verified on a DEEP census slice
-    where single-row '1 2 3' index-legend fragments actually appear (the
-    first-40-page sample never reached them)."""
+    where single-row '1 2 3' index-legend fragments actually appear.
+
+    Range updated for Loop Spec 1 (extract-verify-re-extract retries): pages
+    50-62 used to leak two such fragments because lattice "succeeded" there
+    with a tiny 1-row garbage grid and stream was never tried on that page.
+    table_extractor now retries a low-scoring lattice hit with stream before
+    giving up, so pp.56-57 now extract the REAL underlying tables instead of
+    ghost fragments (a genuine improvement, not a suppression regression —
+    verified by diffing extract_tables() output before/after this change).
+    pp.74-86 still contain two irrecoverable index-legend fragments (a bare
+    serial-number column with no other content — no strategy can fix that),
+    so the ghost-suppression assertion itself is unchanged, just re-pointed
+    at a slice where the fixture still holds."""
     print("Guard AJ — ghost suppression on deep census slice")
     census = os.path.join(ROOT, "Testpdfs/new_batch/census_2011_garhwal.pdf")
-    path = _slice(census, 50, 62)
+    path = _slice(census, 74, 86)
     items = _pipeline(path)
     os.unlink(path)
     legends = sum(1 for i in items if i["reason"] == "index_legend_only")
@@ -1469,6 +1480,639 @@ def guard_toc_prose_quarantine():
               len(toc_passed) == 0, f"got {len(toc_passed)} col_N-only tables still passing")
 
 
+def guard_batch_signature():
+    print("Guard AN — batch cross-PDF grouping")
+    from backend.app.batch.table_signature import group_tables
+    # same strong-titled table across two periods -> one group, two members
+    def _mani(period, cols, title):
+        return {"pdf": f"{period}.pdf", "stem": period, "period": period,
+                "tables": [{"table_id": 1, "name": title, "rows": 5, "cols": len(cols),
+                            "columns": cols, "archetype": "statistical", "csv": "x.csv"}]}
+    titled = group_tables([
+        _mani("2021", ["s_no", "ministry", "score"], "3.1 Ranking of Ministries"),
+        _mani("2022", ["s_no", "ministry", "score"], "3.1 Ranking of Ministries"),
+    ])
+    g = [x for x in titled if x["n_periods"] == 2]
+    check("titled table groups across 2 periods", len(g) == 1 and g[0]["n_members"] == 2,
+          f"got {[(x['n_periods'], x['n_members']) for x in titled]}")
+    # untitled tables cluster on column-set overlap (one added column tolerated)
+    clustered = group_tables([
+        _mani("2021", ["region", "applications", "disposal"], None),
+        _mani("2022", ["region", "applications", "disposal", "pending"], None),
+    ])
+    cg = [x for x in clustered if x["n_periods"] == 2]
+    check("untitled tables cluster on column overlap", len(cg) == 1,
+          f"got {len(clustered)} groups, periods {[x['n_periods'] for x in clustered]}")
+
+
+def guard_batch_schema_diff():
+    print("Guard AO — batch schema diff (added / dropped / renamed)")
+    from backend.app.batch.schema_diff import diff
+    members = [
+        {"period": "2021", "stem": "a", "name": None, "csv": "a.csv",
+         "columns": ["region", "applications", "disposal_rate"]},
+        {"period": "2022", "stem": "b", "name": None, "csv": "b.csv",
+         "columns": ["region", "applications", "disposal_ratio", "pending"]},
+        {"period": "2023", "stem": "c", "name": None, "csv": "c.csv",
+         "columns": ["region", "applications", "disposal_ratio"]},
+    ]
+    d = diff({"signature": "sig", "label": "L", "archetype": "statistical", "members": members})
+    kinds = {(c["kind"], c["period"]) for c in d["changes"]}
+    check("renamed disposal_rate->disposal_ratio at 2022",
+          ("renamed", "2022") in kinds, f"changes={d['changes']}")
+    check("added 'pending' at 2022", ("added", "2022") in kinds, f"changes={kinds}")
+    check("dropped 'pending' at 2023", ("dropped", "2023") in kinds, f"changes={kinds}")
+    check("stable columns not flagged",
+          not any(c["variables"][0] in ("region", "applications") for c in d["changes"]),
+          f"changes={d['changes']}")
+
+
+def guard_batch_panel_assembly():
+    print("Guard AP — batch panel assembly (long format + NaN for absent var)")
+    import pandas as pd
+    from backend.app.batch.panel_builder import build_panel
+    wd = tempfile.mkdtemp()
+    pd.DataFrame({"state": ["AP", "TN"], "val": ["1", "2"]}).to_csv(
+        os.path.join(wd, "a.csv"), index=False)
+    pd.DataFrame({"state": ["AP", "TN"], "val": ["3", "4"], "extra": ["9", "8"]}).to_csv(
+        os.path.join(wd, "b.csv"), index=False)
+    group = {"signature": "sig", "label": "Demo", "archetype": "statistical", "members": [
+        {"period": "2020", "stem": "A", "name": None, "csv": "a.csv",
+         "rows": 2, "cols": 2, "columns": ["state", "val"]},
+        {"period": "2021", "stem": "B", "name": None, "csv": "b.csv",
+         "rows": 2, "cols": 3, "columns": ["state", "val", "extra"]},
+    ]}
+    panel, d = build_panel(group, wd)
+    check("panel is long format with period + source_file",
+          list(panel.columns[:2]) == ["period", "source_file"], f"cols={list(panel.columns)}")
+    check("panel stacks all rows", panel.shape[0] == 4, f"rows={panel.shape[0]}")
+    check("periods present", sorted(panel["period"].unique().tolist()) == ["2020", "2021"],
+          f"periods={panel['period'].unique().tolist()}")
+    early = panel[panel["period"] == "2020"]
+    check("absent variable is NaN in the year it did not exist",
+          early["extra"].isna().all(), f"extra@2020={early['extra'].tolist()}")
+
+
+def guard_agents():
+    print("Guard AQ — agent layer (threshold guards + graceful typing)")
+    from backend.app.agents import base, header_agent, grouping_agent, rename_agent
+
+    # base.call: always returns str or None, never raises
+    result = base.call("test_agent", "hello", system="reply hi")
+    check("base.call returns str or None", result is None or isinstance(result, str),
+          f"got type={type(result)}")
+
+    # header_agent: quality >= 0.70 → skips regardless of model availability
+    no_fire = header_agent.fix_headers(
+        {"columns": ["state", "receipts"], "extraction_quality": {"score": 0.85}},
+        [{"state": "AP", "receipts": "100"}],
+    )
+    check("header_agent skips high-quality table", no_fire == {}, f"got={no_fire}")
+
+    # header_agent: quality < 0.70 → fires; returns a dict (may be empty if model unavailable)
+    fire_result = header_agent.fix_headers(
+        {"columns": ["col", "value"], "extraction_quality": {"score": 0.45}},
+        [{"col": "Andhra Pradesh", "value": "5000"}],
+    )
+    check("header_agent returns dict on low-quality (no crash)", isinstance(fire_result, dict),
+          f"got={fire_result!r}")
+
+    # grouping_agent: Jaccard >= 0.6 → never fires agent (returns None, threshold guard)
+    verdict = grouping_agent.are_same_table(["a", "b"], "2020", ["a", "b"], "2021", 0.75)
+    check("grouping_agent skips confident Jaccard cases", verdict is None, f"got={verdict!r}")
+
+    # grouping_agent: Jaccard < 0.4 → below uncertain zone, also skips
+    verdict_low = grouping_agent.are_same_table(["a", "b"], "2020", ["x", "y"], "2021", 0.10)
+    check("grouping_agent skips below uncertain zone", verdict_low is None, f"got={verdict_low!r}")
+
+    # grouping_agent: uncertain zone → fires; returns bool or None
+    verdict2 = grouping_agent.are_same_table(["a", "b", "c"], "2020", ["a", "b", "d"], "2021", 0.50)
+    check("grouping_agent uncertain zone returns bool or None",
+          verdict2 is None or isinstance(verdict2, bool), f"got={verdict2!r}")
+
+    # rename_agent: always returns a dict, never raises
+    rmap = rename_agent.confirm_rename(["cases_disposed"], ["disposal"], "2022-08", "2022-10")
+    check("rename_agent returns dict (no crash)", isinstance(rmap, dict), f"got={rmap!r}")
+
+
+def guard_extract_retry():
+    print("Guard AR — per-table extract-verify-re-extract loop (table_extractor retries)")
+    import pandas as pd
+    from backend.app.extract.quality import (
+        LOW_QUALITY_THRESHOLD, REVIEW_THRESHOLD, score_table,
+    )
+    from backend.app.extract.table_extractor import _build_kept_item, _consider
+
+    # A garbage lattice read: generic col_N columns tank header_coherence,
+    # matching the audit's real case (ATR/Annexure-2 kept with col/col_2).
+    lattice_df = pd.DataFrame({"col_1": ["1", "bad"], "col_2": ["2", "data"]})
+    lattice_score = score_table(lattice_df)["score"]
+    check("(a) fixture: lattice score below threshold", lattice_score < LOW_QUALITY_THRESHOLD,
+          str(lattice_score))
+
+    # A clean stream read of the same page: real column labels, mostly numeric.
+    stream_df = pd.DataFrame({"state": ["Andhra Pradesh", "Bihar"], "receipts": ["100", "200"]})
+    stream_score = score_table(stream_df)["score"]
+    check("(a) fixture: stream score clears threshold", stream_score >= LOW_QUALITY_THRESHOLD,
+          str(stream_score))
+
+    attempts = []
+    best = {"df": lattice_df, "score": lattice_score, "strategy": "lattice"}
+    attempts.append({"strategy": "lattice", "score": lattice_score})
+    best = _consider(attempts, best, stream_df, stream_score, "stream")
+
+    check("(a) low lattice score triggers a recorded stream retry attempt",
+          len(attempts) == 2 and attempts[1] == {"strategy": "stream", "score": stream_score},
+          str(attempts))
+    check("(a) higher-scoring stream variant is kept, strategy recorded",
+          best["strategy"] == "stream" and best["score"] == stream_score and best["df"] is stream_df,
+          str(best))
+
+    # (c) max-score guarantee: a WORSE later attempt must never replace a
+    # better earlier one, even though it is still recorded in `attempts`.
+    worse_df = pd.DataFrame({"col_1": ["x"]})
+    worse_score = score_table(worse_df)["score"]
+    check("(c) fixture: worse candidate really does score lower",
+          worse_score < best["score"], f"worse={worse_score} best={best['score']}")
+    prior_best = dict(best)
+    best = _consider(attempts, best, worse_df, worse_score, "ocr")
+    check("(c) worse retry recorded as an attempt but does not win",
+          len(attempts) == 3 and attempts[2] == {"strategy": "ocr", "score": worse_score},
+          str(attempts))
+    check("(c) best is unchanged — worse retry never replaces a better earlier attempt",
+          best == prior_best, f"best={best} prior={prior_best}")
+
+    # (b) every strategy stays below threshold -> best-effort keep, not a drop.
+    all_low_attempts = []
+    lo_best = {"df": lattice_df, "score": lattice_score, "strategy": "lattice"}
+    all_low_attempts.append({"strategy": "lattice", "score": lattice_score})
+    retry_low_df = pd.DataFrame({"col_1": ["9", "z"], "col_2": ["8", "y"]})
+    retry_low_score = score_table(retry_low_df)["score"]
+    lo_best = _consider(all_low_attempts, lo_best, retry_low_df, retry_low_score, "stream")
+
+    check("(b) fixture: no strategy clears the low-quality threshold",
+          lo_best["score"] < LOW_QUALITY_THRESHOLD, str(lo_best["score"]))
+
+    item = _build_kept_item(
+        page=1, df=lo_best["df"], bbox=None,
+        attempts=all_low_attempts, best_score=lo_best["score"], best_strategy=lo_best["strategy"],
+    )
+    check("(b) low-quality table is still kept (dataframe present, not dropped)",
+          item["dataframe"] is lo_best["df"], "table was dropped instead of best-effort-kept")
+    check("(b) low_quality flag set true", item["low_quality"] is True, str(item))
+    check("(b) review_needed matches the <0.50 escalation bar",
+          item["review_needed"] == (lo_best["score"] < REVIEW_THRESHOLD),
+          f"score={lo_best['score']} review_needed={item['review_needed']}")
+
+    # Guardrail: max 3 strategies attempted per table (lattice + stream + ocr).
+    check("max-3-strategies guardrail: exactly 3 recorded when all 3 are tried",
+          len(attempts) == 3, str(attempts))
+
+
+def guard_header_agent_verify_retry():
+    print("Guard AS — header-agent verify-and-retry (batch_extract._verify_and_apply_header_agent)")
+    import pandas as pd
+    from backend.app.agents import header_agent
+    from backend.app.batch.batch_extract import (
+        _HEADER_RENAME_MIN_GAIN, _HEADER_RETRY_SAMPLE_ROWS,
+        _verify_and_apply_header_agent,
+    )
+    from backend.app.extract.quality import score_table
+
+    # Two generic (col_N) columns, fully numeric and fully filled, so the
+    # ONLY lever left to raise the score is header_coherence — isolates the
+    # rename-quality signal from numeric_density/fill_rate noise. 5 rows so
+    # df.head(5) in the retry path is actually distinguishable from df.head(3).
+    df = pd.DataFrame({"col_1": ["100", "200", "300", "400", "500"],
+                        "col_2": ["600", "700", "800", "900", "1000"]})
+    old_quality = score_table(df)
+    table_meta = {"columns": list(df.columns), "extraction_quality": old_quality}
+    check("(setup) fixture starts below the low-quality gate that fires the agent",
+          old_quality["score"] < 0.70, str(old_quality))
+
+    orig_fix_headers = header_agent.fix_headers
+
+    # Case (a): every rename the agent proposes is still generic (col_N) ->
+    # no real score gain on either the first or retried attempt.
+    def _always_bad(table_meta, sample_rows):
+        return {"col_1": "col_3", "col_2": "col_4"}
+
+    header_agent.fix_headers = _always_bad
+    try:
+        final_df, final_quality, rename_map, record, failed = \
+            _verify_and_apply_header_agent(df, table_meta)
+    finally:
+        header_agent.fix_headers = orig_fix_headers
+
+    check("(a) a rename that never clears +0.05 is reverted to original columns",
+          list(final_df.columns) == list(df.columns), f"cols={list(final_df.columns)}")
+    check("(a) rename_map is None after revert", rename_map is None, str(rename_map))
+    check("(a) header_agent_failed is set when both attempts fail to improve",
+          failed is True, str(failed))
+    check("(a) manifest record shows applied False, retried True",
+          record["applied"] is False and record["retried"] is True, str(record))
+    check("(a) never keeps a rename that leaves the table no better off",
+          final_quality["score"] == old_quality["score"], str(final_quality))
+
+    # Case (b): the first (3-row) attempt is still bad, but the richer 5-row
+    # retry proposes real column names that clear the +0.05 bar -> kept.
+    calls = []
+
+    def _improves_on_retry(table_meta, sample_rows):
+        calls.append(len(sample_rows))
+        if len(sample_rows) == 3:
+            return {"col_1": "col_3", "col_2": "col_4"}
+        return {"col_1": "state", "col_2": "receipts"}
+
+    header_agent.fix_headers = _improves_on_retry
+    try:
+        final_df2, final_quality2, rename_map2, record2, failed2 = \
+            _verify_and_apply_header_agent(df, table_meta)
+    finally:
+        header_agent.fix_headers = orig_fix_headers
+
+    check("(b) retry is sent the richer 5-row sample, not the original 3",
+          calls == [3, _HEADER_RETRY_SAMPLE_ROWS], f"calls={calls}")
+    check("(b) a retry that clears +0.05 is kept",
+          list(final_df2.columns) == ["state", "receipts"], f"cols={list(final_df2.columns)}")
+    check("(b) kept score actually clears the old score by the gain bar",
+          final_quality2["score"] >= old_quality["score"] + _HEADER_RENAME_MIN_GAIN,
+          str(final_quality2))
+    check("(b) manifest record: applied True, retried True, scores threaded through",
+          record2 == {"applied": True, "old_score": old_quality["score"],
+                      "new_score": final_quality2["score"], "retried": True},
+          str(record2))
+    check("(b) not flagged as failed when the retry succeeds", failed2 is False, str(failed2))
+
+    # Guardrail: never more than 2 agent calls total (original + 1 retry).
+    check("max-2-attempts guardrail: exactly 2 agent calls made across both cases' retry path",
+          len(calls) == 2, str(calls))
+
+
+def guard_batch_quality_gate():
+    """Guard AT — batch quality gate (Loop Spec 3): grades a batch's assembled
+    panels by reusing measure_table/aggregate_quality.compute_corpus (no
+    reimplemented scoring), writes quality_report.json, and never blocks
+    even on a RED corpus."""
+    print("Guard AT — batch quality gate (measure_table/aggregate_quality reuse, warn-not-block)")
+    import json
+    import tempfile
+    import pandas as pd
+    from backend.app.cleaning.numeric_normalizer import normalize_numeric_columns
+    from backend.tools.batch_quality_gate import evaluate, summary_line, write_report
+
+    # known-good corpus: real title, clean numeric columns, no generic/dup cols.
+    good_panel = pd.DataFrame({
+        "period": ["2020", "2021", "2022"],
+        "source_file": ["a", "b", "c"],
+        "state": ["Andhra Pradesh", "Bihar", "Goa"],
+        "rural": [10.0, 11.0, 12.0],
+        "urban": [20.0, 21.0, 22.0],
+    })
+    good_report = evaluate([{"label": "Annexure 1 Performance of Ministries", "panel": good_panel}])
+    check("known-good corpus grades GREEN", good_report["overall"] == "GREEN",
+          str(good_report["checks"]))
+    check("known-good corpus flags no worst tables", good_report["worst_tables"] == [],
+          str(good_report["worst_tables"]))
+    check("quality report has the documented keys",
+          set(good_report) >= {"n_panels", "overall", "checks", "worst_tables", "corpus"},
+          str(list(good_report)))
+    check("corpus dict carries the real aggregate_quality field names (not reinvented)",
+          {"mean_numeric_readiness", "tables_zero_coln_frac", "named_frac"} <= set(good_report["corpus"]),
+          str(list(good_report["corpus"])))
+
+    # known-bad corpus: fallback title, low numeric readiness (poisoned
+    # column, same pattern as Guard Y), a generic col_N name, a dup column.
+    raw = pd.DataFrame({
+        "state": ["AP", "Bihar", "Goa", "MP"],
+        "metric_good": ["10", "11", "12", "14"],
+        "metric_bad": ["x", "y", "13", "15"],
+    })
+    raw = normalize_numeric_columns(raw)
+    raw.insert(0, "source_file", ["a", "b", "c", "d"])
+    raw.insert(0, "period", ["2020", "2021", "2022", "2023"])
+    raw.columns = ["period", "source_file", "state", "col_1", "col_1"]  # generic + dup name
+    bad_panels = [{"label": "(4-col statistical table)", "panel": raw}]
+    bad_report = evaluate(bad_panels)
+    check("known-bad corpus grades RED", bad_report["overall"] == "RED", str(bad_report["checks"]))
+    check("named_frac check fails on the panel-builder's generic fallback label",
+          bad_report["checks"]["named_frac"]["pass"] is False, str(bad_report["checks"]["named_frac"]))
+    check("mean_numeric_readiness check fails on the poisoned column",
+          bad_report["checks"]["mean_numeric_readiness"]["pass"] is False,
+          str(bad_report["checks"]["mean_numeric_readiness"]))
+    check("known-bad corpus names the worst table with its own measure_table fields",
+          bool(bad_report["worst_tables"]) and "4-col" in (bad_report["worst_tables"][0]["title"] or ""),
+          str(bad_report["worst_tables"]))
+
+    # write_report must actually write the file and never raise on RED.
+    wd = tempfile.mkdtemp()
+    report, path = write_report(bad_panels, wd)
+    check("write_report writes quality_report.json", os.path.exists(path), path)
+    with open(path) as f:
+        on_disk = json.load(f)
+    check("quality_report.json round-trips the RED verdict", on_disk["overall"] == "RED",
+          str(on_disk.get("overall")))
+    check("summary_line warns without raising or refusing on RED",
+          summary_line(report).startswith("quality gate: RED"), summary_line(report))
+
+
+def guard_recheck_quarantine():
+    """Guard AU — quarantine re-check (Loop Spec 4): recheck_quarantine.py
+    re-extracts + re-validates each quarantined page and either promotes a
+    now-passing row into promoted_tables.csv or re-quarantines a still-bad
+    one with a refreshed reason. Uses a fake extract_tables (monkeypatched on
+    table_extractor, picked up because recheck_quarantine imports it lazily
+    inside the function body) so the guard is fast and doesn't depend on
+    Loop 1's retry logic actually firing on a real PDF."""
+    print("Guard AU — quarantine re-check (recheck_quarantine.py)")
+    import shutil
+    import tempfile
+    import pandas as pd
+    from backend.tools import recheck_quarantine as rq
+    import backend.app.extract.table_extractor as table_extractor
+
+    workdir = tempfile.mkdtemp()
+    dummy_pdf = os.path.join(workdir, "dummy.pdf")
+    with open(dummy_pdf, "wb") as f:
+        f.write(b"%PDF-1.4 fake")  # only os.path.exists() is checked, never opened
+
+    # page 1: now extracts cleanly (real header row, numeric data) -> promote
+    good_raw = pd.DataFrame([
+        ["State", "Rural", "Urban"],
+        ["Andhra Pradesh", "10", "20"],
+        ["Bihar", "11", "21"],
+        ["Goa", "12", "22"],
+    ])
+    # page 2: genuinely bad — one real column, no retry strategy fixes that
+    bad_raw = pd.DataFrame([["x"], ["1"], ["2"]])
+
+    fake_tables = [
+        {"table_id": 1, "page": 1, "dataframe": good_raw, "caption": None,
+         "flavor": "lattice", "attempts": [{"strategy": "lattice", "score": 0.85}],
+         "best_score": 0.85, "low_quality": False, "review_needed": False},
+        {"table_id": 2, "page": 2, "dataframe": bad_raw, "caption": None,
+         "flavor": "lattice", "attempts": [{"strategy": "lattice", "score": 0.55}],
+         "best_score": 0.55, "low_quality": True, "review_needed": False},
+    ]
+
+    # Loop Spec 4: recheck_quarantine now calls extract_tables(pdf_path,
+    # pages=...) scoped to the pages actually being rechecked — record what
+    # scope it was actually called with so this guard can assert scoping
+    # happened, not just that the fake still returns something.
+    scope_calls = []
+
+    def _fake_extract(pdf_path, pages=None):
+        scope_calls.append(pages)
+        return fake_tables
+
+    original_extract_tables = table_extractor.extract_tables
+    table_extractor.extract_tables = _fake_extract
+    try:
+        failed_csv = os.path.join(workdir, "failed_tables.csv")
+        pd.DataFrame([
+            {"table": 1, "page": 1, "reason": "too_few_columns"},
+            {"table": 2, "page": 2, "reason": "mostly_empty"},
+        ]).to_csv(failed_csv, index=False)
+
+        n_checked, n_promoted = rq.run(workdir, pdf_path=dummy_pdf, run_id="guard", force=True)
+    finally:
+        table_extractor.extract_tables = original_extract_tables
+
+    check("(a) extract_tables was called exactly once for this pdf (batched, not per-row)",
+          len(scope_calls) == 1, str(scope_calls))
+    check("(a) it was scoped to exactly the 2 quarantined pages, not the whole document",
+          scope_calls and sorted(scope_calls[0]) == [1, 2], str(scope_calls))
+
+    check("(a) both quarantined rows rechecked", n_checked == 2, str(n_checked))
+    check("(a) exactly the fixable row promoted", n_promoted == 1, str(n_promoted))
+
+    promoted = pd.read_csv(os.path.join(workdir, "promoted_tables.csv"))
+    check("(a) promoted_tables.csv has the p1 row with its real score + reason",
+          len(promoted) == 1 and promoted.iloc[0]["page"] == 1
+          and promoted.iloc[0]["reason"] == "passed_on_recheck"
+          and promoted.iloc[0]["score"] == 0.85,
+          str(promoted.to_dict("records")))
+
+    still_failed = pd.read_csv(failed_csv)
+    check("(b) genuinely-bad row stays quarantined, promoted row removed from failed_tables.csv",
+          len(still_failed) == 1 and still_failed.iloc[0]["page"] == 2,
+          str(still_failed.to_dict("records")))
+    check("(b) re-quarantine REFRESHES the reason, not left stale as the old 'mostly_empty'",
+          still_failed.iloc[0]["reason"] == "too_few_columns",
+          str(still_failed.iloc[0]["reason"]))
+    check("(b) last_rechecked stamped with this run's id",
+          still_failed.iloc[0]["last_rechecked"] == "guard",
+          str(still_failed.iloc[0]["last_rechecked"]))
+
+    # guardrail: a second run at the SAME run-id (no --force) must skip
+    # everything — re-check nothing, call extract_tables zero times.
+    calls = []
+
+    def _counting_fake(pdf_path, pages=None):
+        calls.append(pdf_path)
+        return fake_tables
+
+    table_extractor.extract_tables = _counting_fake
+    try:
+        n_checked2, n_promoted2 = rq.run(workdir, pdf_path=dummy_pdf, run_id="guard", force=False)
+    finally:
+        table_extractor.extract_tables = original_extract_tables
+    check("(c) repeat run at the same run-id re-checks nothing (no redundant re-extraction)",
+          n_checked2 == 0 and n_promoted2 == 0 and calls == [], str((n_checked2, calls)))
+
+    shutil.rmtree(workdir, ignore_errors=True)
+
+
+def guard_group_confidence():
+    """Guard AV — confidence-gated group confirmation (Loop Spec 5):
+    group_tables() must tag each group "auto" or "review" so the skill's
+    Step 2 only makes the analyst walk through genuinely ambiguous groups."""
+    print("Guard AV — group confidence gate (table_signature.group_tables)")
+    from backend.app.batch.table_signature import group_tables
+
+    def _mani(period, cols, title):
+        return {"pdf": f"{period}.pdf", "stem": period, "period": period,
+                "tables": [{"table_id": 1, "name": title, "rows": 5, "cols": len(cols),
+                            "columns": cols, "archetype": "statistical", "csv": "x.csv"}]}
+
+    # (a) strong title match both periods -> confidently auto-approved
+    auto_groups = group_tables([
+        _mani("2021", ["s_no", "ministry", "score"], "3.1 Ranking of Ministries"),
+        _mani("2022", ["s_no", "ministry", "score"], "3.1 Ranking of Ministries"),
+    ])
+    ag = [g for g in auto_groups if g["n_periods"] == 2]
+    check("(a) title-matched group carries the confidence field",
+          len(ag) == 1 and "confidence" in ag[0], f"got {ag}")
+    check("(a) title-matched group is tagged auto",
+          ag[0]["confidence"] == "auto", f"confidence={ag[0].get('confidence')}")
+
+    # (b) untitled tables whose column overlap lands in [0.6, 0.8) — joins the
+    # group (clears the 0.6 join bar) but is too marginal to wave through
+    # unreviewed. 4 of 5 columns match exactly, 1 differs each side:
+    # fuzzy Jaccard = 4 / (5 + 5 - 4) = 4/6 = 0.667, inside [0.6, 0.8) and
+    # short of _JACCARD_AUTO. (Union is |A|+|B|-matched, per the corrected
+    # _fuzzy_jaccard formula — see guard_fuzzy_jaccard_bounds below.)
+    review_groups = group_tables([
+        _mani("2021", ["region", "applications", "disposal", "pending", "status"], None),
+        _mani("2022", ["region", "applications", "disposal", "pending", "zzz_unmatched"], None),
+    ])
+    rg = [g for g in review_groups if g["n_periods"] == 2]
+    check("(b) marginal column-overlap group still merges into one group",
+          len(rg) == 1, f"got {len(review_groups)} groups: {review_groups}")
+    check("(b) marginal [0.6, 0.8) overlap is tagged review, not auto",
+          rg[0]["confidence"] == "review", f"confidence={rg[0].get('confidence')}")
+
+
+def guard_fuzzy_jaccard_bounds():
+    """Guard AW — _fuzzy_jaccard() must never exceed 1.0. The old formula
+    computed union as len(a | b) - intersection, which double-subtracts any
+    matched pair that happens to be an EXACT string match (already deduped by
+    the plain set union), not just fuzzy near-matches. This broke hardest on
+    near-subset column sets, where most matched pairs are exact. Fixed to
+    len(a) + len(b) - intersection, the correct fuzzy-Jaccard union."""
+    print("Guard AW — fuzzy Jaccard union formula (table_signature._fuzzy_jaccard)")
+    from backend.app.batch.table_signature import _fuzzy_jaccard
+
+    # (a) exact subset: a's 2 columns are both exact matches inside b's 3 —
+    # old formula gave 2/(3-2) = 2.0; correct value is 2/(2+3-2) = 2/3.
+    a = {"s_no", "name_state"}
+    b = {"s_no", "name_state", "pending"}
+    score = _fuzzy_jaccard(a, b)
+    check("(a) exact-subset overlap never exceeds 1.0", score <= 1.0, f"score={score}")
+    check("(a) exact-subset overlap matches plain Jaccard (2/3)",
+          abs(score - (2 / 3)) < 1e-9, f"score={score}")
+
+    # (b) mixed exact + fuzzy match: one exact pair, one fuzzy pair (drift),
+    # one unmatched column each side. |A|=3,|B|=3,M=2 -> union=3+3-2=4,
+    # score=2/4=0.5. Old formula: len(a|b)=6 (fuzzy pair not deduped by set
+    # union since strings differ) - 2 = 4 -> coincidentally also 0.5 here,
+    # so this case alone wouldn't have caught the bug — included for coverage
+    # of the "no exact overlap" branch, distinct from case (a)/(c).
+    a2 = {"nodal_officers", "level", "alpha"}
+    b2 = {"nodal_officer", "level", "beta"}
+    score2 = _fuzzy_jaccard(a2, b2)
+    check("(b) exact+fuzzy mix never exceeds 1.0", score2 <= 1.0, f"score={score2}")
+    check("(b) exact+fuzzy mix scores 0.5", abs(score2 - 0.5) < 1e-9, f"score={score2}")
+
+    # (c) identical sets (all exact matches) must score exactly 1.0, not >1.0.
+    c = {"s_no", "name_state", "receipts", "disposal"}
+    score3 = _fuzzy_jaccard(c, set(c))
+    check("(c) identical sets score exactly 1.0", abs(score3 - 1.0) < 1e-9, f"score={score3}")
+
+
+def guard_quality_gate_reference_corpus():
+    """Guard AY — Loop Spec 3's thresholds validated against a SECOND, real,
+    structurally different corpus: the NCO concordance PDF (reference
+    archetype — code+text lookup tables, mostly no numeric measures at all),
+    also used by Guard AM. Loop 3's thresholds were originally calibrated
+    only against a real DARPG batch (100% statistical archetype). This guard
+    proves: (a) a clean reference-heavy slice stays GREEN — the
+    numeric_readiness threshold does not falsely penalize tables that simply
+    have no intended-numeric columns; (b) isolating the slice's genuinely
+    dirty tables (prose mis-extracted as tables, mostly generic col_N
+    columns) correctly flips the gate RED on real data, not just synthetic
+    fixtures. See batch_quality_gate.py's module docstring for the full
+    write-up."""
+    print("Guard AY — batch quality gate against a real reference-archetype corpus (NCO)")
+    nco = "/Users/thesinghaa/Downloads/national classification of occupations _vol i- 2015.pdf"
+    if not os.path.exists(nco):
+        print("  [SKIP] NCO PDF not found — skipping second-corpus quality gate guard")
+        return
+
+    from backend.tools.batch_quality_gate import evaluate
+
+    path = _slice(nco, 1, 100)
+    items = _pipeline(path)
+    os.unlink(path)
+    passed = [i for i in items if i["passed"]]
+    check("(a) a substantial reference-heavy slice extracts and validates",
+          len(passed) >= 40, f"got {len(passed)}")
+
+    all_panels = [{"label": i["name"] or f"table_{i['table_id']}", "panel": i["df"]} for i in passed]
+    clean_report = evaluate(all_panels)
+    check("(a) the full clean slice (reference + statistical mix) grades GREEN",
+          clean_report["overall"] == "GREEN", str(clean_report["checks"]))
+
+    dirty = [i for i in passed
+             if sum(1 for c in i["df"].columns if str(c).startswith("col"))
+                / max(len(i["df"].columns), 1) >= 0.5]
+    check("(b) the real corpus contains at least a few genuinely dirty tables to isolate",
+          len(dirty) >= 3, f"got {len(dirty)}")
+
+    if dirty:
+        dirty_panels = [{"label": i["name"] or f"table_{i['table_id']}", "panel": i["df"]} for i in dirty]
+        dirty_report = evaluate(dirty_panels)
+        check("(b) a corpus dominated by real dirty reference tables flips RED",
+              dirty_report["overall"] == "RED", str(dirty_report["checks"]))
+        check("(b) tables_zero_coln_frac is the check that fails (generic columns detected)",
+              not dirty_report["checks"]["tables_zero_coln_frac"]["pass"],
+              str(dirty_report["checks"]))
+
+
+def guard_page_scope_real_pdf():
+    """Guard AX — Loop Spec 4 page-scoping, exercised against a REAL 200-page
+    PDF (Sample.pdf), not a synthetic fixture. Guard AU already proves
+    recheck_quarantine.py REQUESTS the right page set from extract_tables();
+    this guard proves extract_tables() ITSELF actually narrows the expensive
+    camelot calls to that scope on a real multi-page document. It intercepts
+    camelot.read_pdf — the actual external library call whose per-page work
+    is what page-scoping exists to avoid — and records the `pages` argument
+    it receives, rather than paying for a real 200-page camelot run inside
+    the guard suite (the stub returns an empty result, so no actual table
+    geometry search happens; only the call's arguments are being verified)."""
+    print("Guard AX — page-scoping on a real multi-page PDF (table_extractor.extract_tables)")
+    import camelot
+    from backend.app.extract import table_extractor
+
+    sample_pdf = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "Sample.pdf"))
+    if not os.path.exists(sample_pdf):
+        print("  [SKIP] Sample.pdf not found in repo root — skipping real-PDF page-scope guard")
+        return
+
+    calls = []
+
+    def _recording_read_pdf(path, pages="1", flavor="lattice", **kwargs):
+        calls.append({"pages": pages, "flavor": flavor})
+        return []
+
+    original_read_pdf = camelot.read_pdf
+
+    # (a)+(b): scoped call — restrict extract_tables to a single real page.
+    camelot.read_pdf = _recording_read_pdf
+    try:
+        table_extractor.extract_tables(sample_pdf, pages=[7])
+    finally:
+        camelot.read_pdf = original_read_pdf
+
+    lattice_calls = [c for c in calls if c["flavor"] == "lattice"]
+    check("(a) the lattice pass is scoped to the requested page, not 'all'",
+          len(lattice_calls) == 1 and lattice_calls[0]["pages"] == "7", str(calls))
+
+    # Stub returns nothing, so the stream fallback must fire — and it must
+    # ALSO stay scoped to page 7, never sweep Sample.pdf's real 200 pages
+    # looking for tables lattice missed.
+    stream_calls = [c for c in calls if c["flavor"] == "stream"]
+    check("(b) the stream fallback fired (scoping didn't silently suppress it)",
+          len(stream_calls) == 1, str(calls))
+    check("(b) the stream fallback only requested the scoped page, never all 200",
+          bool(stream_calls) and stream_calls[0]["pages"] == "7", str(calls))
+
+    # (c) unscoped (default, pages=None) call — every pre-existing caller's
+    # behavior — must still request the WHOLE document. Confirms scoping is
+    # strictly opt-in and changed nothing for callers that don't pass `pages`.
+    calls.clear()
+    camelot.read_pdf = _recording_read_pdf
+    try:
+        table_extractor.extract_tables(sample_pdf)
+    finally:
+        camelot.read_pdf = original_read_pdf
+
+    default_lattice_calls = [c for c in calls if c["flavor"] == "lattice"]
+    check("(c) unscoped call still requests the whole document ('all') — unchanged default behavior",
+          len(default_lattice_calls) == 1 and default_lattice_calls[0]["pages"] == "all",
+          str(calls))
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -1490,7 +2134,13 @@ if __name__ == "__main__":
                    guard_section_lift, guard_multilevel_header_merge,
                    guard_workbook_toc, guard_numeric_normalization,
                    guard_ghost_suppression, guard_toc_prose_quarantine,
-                   guard_title_recovery, guard_reference_tables)
+                   guard_title_recovery, guard_reference_tables,
+                   guard_batch_signature, guard_batch_schema_diff,
+                   guard_batch_panel_assembly, guard_agents,
+                   guard_extract_retry, guard_header_agent_verify_retry,
+                   guard_batch_quality_gate, guard_recheck_quarantine,
+                   guard_group_confidence, guard_fuzzy_jaccard_bounds,
+                   guard_quality_gate_reference_corpus, guard_page_scope_real_pdf)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

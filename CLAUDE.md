@@ -1,5 +1,23 @@
 # CLAUDE.md
 
+## First time here? Run install first.
+
+If `.venv/` does not exist in this folder, the engine is not set up yet.
+Tell the user and run:
+
+```bash
+bash install.sh
+```
+
+This creates the Python venv, installs all dependencies, registers the MCP
+server with Claude Code, and copies the skill. Takes ~60 seconds. After it
+finishes, ask the user to restart Claude Code — then everything works automatically.
+
+Once installed, the user never needs to touch a terminal again. Just drop a
+folder of PDFs and say "build panel data from these".
+
+---
+
 Guidance for working in this repo (Data Rubiks / CODEDPipeline).
 
 ## What this is

@@ -36,7 +36,14 @@ frontend/.vite/
 # IDE
 .vscode/
 .idea/
-.claude/
+# .claude/ is NOT blanket-ignored: .claude/skills/ ships as part of the
+# engine (install.sh copies it to the user's global skills dir). Only ignore
+# local session/settings state if it ever appears here.
+.claude/settings.json
+.claude/settings.local.json
 backend_files.txt
 project_tree.txt
 .vercel
+
+# Secrets — never commit live credentials
+.mcp.json

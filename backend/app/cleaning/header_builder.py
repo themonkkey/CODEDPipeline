@@ -532,6 +532,64 @@ def _apply_reference_headers(df, header_rows):
     return data_df
 
 
+# month token possibly carrying a year suffix ("Feb'25", "Mar 2025", "Apr-25")
+_MONTH_TOKEN = re.compile(
+    r"^(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|"
+    r"aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)"
+    r"[.'’\- ]*\d{0,4}$",
+    re.IGNORECASE,
+)
+# a column name that is generic (col_N) or built purely from month tokens
+# (jan, feb_mar_apr_may) — safe to overwrite with a redistributed month
+_MONTHISH_NAME = re.compile(
+    r"^(col(_\d+)?|"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+    r"(_(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{2,4}))*)$"
+)
+
+
+def _redistribute_crushed_months(data_df, header_df, title_rows):
+    """Distribute month labels crushed into one lattice header cell.
+
+    Fires only when (a) some header cell holds >= 2 month tokens (the crush
+    evidence), and (b) the month tokens, in reading order, exactly cover the
+    trailing run of generic / month-named columns — then each of those
+    columns is renamed to its month positionally."""
+    tokens = []
+    crushed = False
+    for i in range(len(header_df)):
+        if i in title_rows:
+            continue
+        row_tokens = []
+        for cell in header_df.iloc[i].astype(str).tolist():
+            cell_tokens = [t for t in cell.split() if _MONTH_TOKEN.match(t)]
+            # every whitespace-separated fragment must be a month, otherwise
+            # the cell is prose that merely mentions a month
+            if cell_tokens and len(cell_tokens) == len(cell.split()):
+                row_tokens.extend(cell_tokens)
+                if len(cell_tokens) >= 2:
+                    crushed = True
+        if len(row_tokens) > len(tokens):
+            tokens = row_tokens
+    if not crushed or len(tokens) < 3:
+        return data_df
+
+    # trailing run of overwritable (generic or month-named) columns
+    names = [str(c) for c in data_df.columns]
+    left = len(names)
+    while left > 0 and _MONTHISH_NAME.fullmatch(names[left - 1]):
+        left -= 1
+    if len(names) - left < len(tokens):
+        return data_df
+
+    # months are the RIGHTMOST columns of the run — anything left of them in
+    # the run (e.g. the still-generic row-label column) keeps its name
+    start = len(names) - len(tokens)
+    months = [_MONTH_TOKEN.match(t).group(1).lower()[:3] for t in tokens]
+    data_df.columns = names[:start] + months
+    return data_df
+
+
 def apply_headers(df, header_rows):
 
     # Docling pre-names columns (nfhs6_urban, indicator, …) — skip header detection
@@ -629,6 +687,17 @@ def apply_headers(df, header_rows):
         num = sum(1 for v in populated if _NUM_CELL.match(v))
         col_numeric_frac.append(num / len(populated))
 
+    # (e) chart-axis debris above a month header: charts exported above the
+    #     grid leave sparse bare-number rows ("2000 | | | 2508") in the band;
+    #     an all-numeric row ABOVE a month-name header row is debris, never a
+    #     group label (real group labels above months carry letters).
+    from backend.app.cleaning.header_detector import is_month_header_row
+    first_month_row = None
+    for i in range(len(header_df)):
+        if is_month_header_row(header_df.iloc[i]):
+            first_month_row = i
+            break
+
     for i in range(len(header_df)):
 
         cells = [str(v).strip() for v in df.iloc[i].tolist()]
@@ -636,6 +705,14 @@ def apply_headers(df, header_rows):
 
         # (a) single-cell spanning row
         if len(non_empty) <= 1:
+            title_rows.add(i)
+            continue
+
+        # (e) numeric debris above the month header band
+        if (
+            first_month_row is not None and i < first_month_row
+            and not any(re.search(r"[A-Za-z]", c) for c in non_empty)
+        ):
             title_rows.add(i)
             continue
 
@@ -825,6 +902,16 @@ def apply_headers(df, header_rows):
 
         if len(keep) >= 2 and len(keep) < data_df.shape[1]:
             data_df = data_df.iloc[:, keep]
+
+    #
+    # Crushed month headers: lattice sometimes merges several month labels
+    # into ONE header cell ("Feb'25 Mar'25 Apr'25 May'25") while the data
+    # cells stay separate, so the neighbouring columns fall back to col_N.
+    # When the month tokens across the header band, in reading order, exactly
+    # cover the trailing generic/month-named columns, redistribute them
+    # positionally (one month per column).
+    #
+    data_df = _redistribute_crushed_months(data_df, header_df, title_rows)
 
     #
 # First column should be serial number,

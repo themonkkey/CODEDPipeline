@@ -10,6 +10,25 @@ NUMERIC_CELL = re.compile(
     r"^-?[\d,]+(\.\d+)?%?$"
 )
 
+# calendar month label used as a column header ("Jan", "February", "Sept")
+MONTH_PATTERN = re.compile(
+    r"^(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|"
+    r"aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\.?$",
+    re.IGNORECASE,
+)
+
+
+def is_month_header_row(row):
+    """A row whose value cells are predominantly month names is a column
+    header with very high confidence — no data row is a run of bare months.
+    Column 0 (row-label column, e.g. "Month") may hold anything."""
+    cells = [str(c).strip() for c in list(row)[1:]
+             if str(c).strip() not in ("", "nan", "None")]
+    if len(cells) < 3:
+        return False
+    months = sum(1 for c in cells if MONTH_PATTERN.match(c))
+    return months >= max(3, len(cells) * 0.7)
+
 
 def _numeric_density(row):
 
@@ -44,6 +63,18 @@ def detect_header_rows(df):
         return reference_header_rows(df)
 
     max_scan = min(8, len(df))
+
+    # A row of month names is the strongest header signal there is — charts
+    # exported above the grid leave numeric axis debris ("2000 | 2508") in the
+    # leading rows that the year-row rule below would mistake for a year
+    # header, cutting the band short of the real month header. The LAST month
+    # row wins (sources sometimes print the month band twice).
+    month_row = None
+    for i in range(max_scan):
+        if is_month_header_row(df.iloc[i]):
+            month_row = i
+    if month_row is not None:
+        return month_row + 1
 
     year_row = None
     data_row = None

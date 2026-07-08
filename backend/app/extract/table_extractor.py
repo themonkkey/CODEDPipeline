@@ -198,6 +198,10 @@ def _looks_like_heading(line):
         return False
     if re.search(r"[.;]\s|[.;]$|:\s*$", line):     # sentence-like / dangling colon
         return False
+    # unbalanced closing paren: a wrapped header-cell TAIL ("Integration)
+    # Integration)"), never how a heading starts
+    if line.count(")") > line.count("("):
+        return False
     compact = line.replace(" ", "")
     if not compact or sum(c.isalpha() for c in compact) < 0.6 * len(compact):
         return False                                # mostly digits/symbols -> a data row
@@ -280,6 +284,22 @@ def _extract_caption(plumber_pdf, page_num, bbox):
 
         if title:
             return title
+
+        # full-page border frame: on pages with an outer decorative box,
+        # lattice takes the FRAME as the table boundary, so the bbox spans
+        # nearly the whole page and the title line sits INSIDE it (in the
+        # band between the frame top and the real grid). Nothing is "above
+        # the table" then — search the top band of the bbox itself.
+        bbox_height = abs(bbox[3] - bbox[1])
+        if bbox_height > 0.85 * page.height:
+            band_bottom = table_top + 0.2 * bbox_height
+            band = page.crop((0, max(0, table_top), page.width,
+                              min(page.height, band_bottom)))
+            band_lines = [l.strip() for l in (band.extract_text() or "").split("\n")
+                          if l.strip()]
+            title = _title_from_lines(band_lines)
+            if title:
+                return title
 
         # table starts at the very top of its page: the heading may sit
         # at the bottom of the previous page
@@ -411,24 +431,29 @@ def _header_is_missing(df):
         return False
 
     ncols = df.shape[1]
+    labelled = set()
     for j in range(data_i):
         cells = [str(v).strip() for v in df.iloc[j].tolist()]
         labels = [
-            c for c in cells
+            (k, c) for k, c in enumerate(cells)
             if c and c not in ("nan", "None") and not _INDEX_ONLY.match(c)
         ]
         if not labels:
             continue
         # a real captured header labels most columns with short tokens; a
         # title/section block leaves columns blank or carries long prose.
-        all_short = all(len(c.split()) <= 3 for c in labels)
-        if all_short and len(labels) >= max(2, ncols * 0.5):
-            return False
+        # Multi-level headers spread the labels over SEVERAL rows (group row
+        # + sub-label row), so judge the UNION of short-labelled columns
+        # across the whole pre-data band, not each row alone.
+        if all(len(c.split()) <= 3 for _, c in labels):
+            labelled.update(k for k, _ in labels)
+            if len(labelled) >= max(2, ncols * 0.5):
+                return False
 
     return True
 
 
-def _recover_stream_header(table, df, plumber_pdf):
+def _recover_stream_header(table, df, plumber_pdf, pad_below=16):
     """
     Read the column labels that camelot's stream flavor dropped, by extracting
     words from the band just above the table and bucketing them into camelot's
@@ -455,8 +480,12 @@ def _recover_stream_header(table, df, plumber_pdf):
         height = page.height
         table_top = height - bbox[3]
 
+        # pad_below reaches slightly INTO the table for stream (its bbox top
+        # can sit below the header line); lattice callers pass 0 — the grid
+        # boundary is exact, and padding would leak the first data row's
+        # words into the recovered header.
         band = page.crop((
-            0, max(0, table_top - 58), page.width, min(height, table_top + 16)
+            0, max(0, table_top - 58), page.width, min(height, table_top + pad_below)
         ))
         words = band.extract_words()
         if not words:
@@ -718,8 +747,18 @@ def extract_tables(pdf_path, pages=None):
             continue
 
         good_lattice_pages.add(page)
+        # decide BEFORE the positional repair below — it mutates table.df
+        # (raw_df aliases it), and a spread title row reads as headerless
+        raw_header_missing = _header_is_missing(raw_df)
         df = _repair_header_positionally(table, plumber_pdf)
         df = _repair_crushed_header_rows(df)
+        # lattice can also miss the header: when the ruled grid starts at the
+        # first DATA row and the multi-line header band sits above it unruled
+        # (DARPG annexures), the same positional recovery used for stream
+        # applies — it is gated on _header_is_missing, so tables whose grid
+        # captured the header are never touched.
+        if raw_header_missing:
+            df = _recover_stream_header(table, df, plumber_pdf, pad_below=0)
         df, ocr = _ocr_recover_if_corrupt(table, df, plumber_pdf)
 
         # extract-verify-re-extract: lattice "succeeding" only means it found

@@ -16,7 +16,7 @@ survey, occupation classifications).
 ## The one hard rule: guards stay green
 
 All behaviour is pinned by regression guards in
-`backend/tools/regression_guards.py` (currently 38 guard groups, labelled A–AM).
+`backend/tools/regression_guards.py` (currently 45 guard groups, labelled A–BG).
 
 **Before any commit, run the full suite and confirm GREEN:**
 

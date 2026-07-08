@@ -1788,6 +1788,278 @@ def guard_page_scope_real_pdf():
           str(calls))
 
 
+def guard_frame_title_recovery():
+    """Guard BI — titles inside a full-page border frame (table_extractor).
+    DARPG 2022 pages draw a decorative box around the whole page; lattice
+    takes that frame as the table boundary, so the bbox spans ~the full page
+    and the "Annexure X.Y.: ..." title line sits INSIDE the bbox — the
+    above-the-table caption search found nothing and 20+ tables shipped
+    untitled. _extract_caption now searches the bbox's own top band when the
+    bbox covers >85% of the page. Also: a heading candidate with unbalanced
+    closing parens ("Integration) Integration)") is a wrapped header-cell
+    tail, never a title."""
+    print("Guard BI — frame-title recovery + unbalanced-paren heading rejection")
+    from backend.app.extract.table_extractor import _looks_like_heading, extract_tables
+
+    check("unbalanced-paren fragment rejected as heading",
+          not _looks_like_heading("Integration) Integration)"), "")
+    check("balanced parens still fine",
+          _looks_like_heading("Maximum Pendency Percentage (North-Eastern States)"), "")
+
+    pdf = "/Users/thesinghaa/Downloads/cpgram_state_all/Aug_2022.pdf"
+    if not os.path.exists(pdf):
+        print("  [SKIP] CPGRAM Aug_2022.pdf not found — skipping real-PDF frame-title case")
+        return
+    tabs = extract_tables(pdf, pages=[10])
+    caps = [t.get("caption") or "" for t in tabs]
+    check("framed-page Annexure title recovered from inside the bbox",
+          any(c.startswith("Annexure 1.4") for c in caps), str(caps))
+
+
+def guard_fragment_quarantine():
+    """Guard BH — infographic/prose fragment quarantine (table_validator).
+    Two junk families observed leaking through on the CPGRAM corpus (scores
+    0.05-0.24, dragging the corpus mean): (a) narrative paragraphs carrying
+    the print footer "N | P a g e" split across a 3x3 grid; (b) infographic
+    bullet lists ("PMKISAN related issues Receipts: 509 | 60.74%") where only
+    one column has content and the rest are camelot grid ghosts. Both are
+    page furniture, not tables. Real small tables must keep passing."""
+    print("Guard BH — fragment quarantine (single_column_list + page_footer_fragment)")
+    import pandas as pd
+    from backend.app.validation.table_validator import validate_table
+
+    prose = pd.DataFrame({
+        "label": ["Public Grievances has undertaken a massive mandate of",
+                  "States/UTs grievance portals with CPGRAMS.", ""],
+        "x": ["integrating all", "", ""],
+        "label_2": ["the respective", "", "13 | P a g e"],
+    })
+    check("(a) prose fragment with page footer quarantined",
+          validate_table(prose) == {"passed": False, "reason": "page_footer_fragment"},
+          str(validate_table(prose)))
+
+    bullets = pd.DataFrame({
+        "col": [""] * 5, "col_2": [""] * 5,
+        "label": ["", "PMKISAN related issues Receipts: 56 | 34.15%",
+                  "Mobile related Receipts: 8 | 4.88%",
+                  "PMKISAN related issues Receipts: 37 | 22.98%",
+                  "Pradhan Mantri Gram Sadak Yojana Receipts: 16 | 9.94%"],
+    })
+    check("(b) single-populated-column bullet list quarantined",
+          validate_table(bullets) == {"passed": False, "reason": "single_column_list"},
+          str(validate_table(bullets)))
+
+    real = pd.DataFrame({"state": ["Kerala", "Odisha", "Assam"],
+                         "receipts": ["120", "340", "77"]})
+    check("(c) real small 2-col table still passes",
+          validate_table(real)["passed"] is True, str(validate_table(real)))
+
+    # a big table that MENTIONS a page footer in one cell is NOT gated
+    big = pd.DataFrame({
+        "state": [f"State {i}" for i in range(12)],
+        "receipts": [str(100 + i) for i in range(12)],
+        "note": ["13 | P a g e"] + [""] * 11,
+    })
+    check("(d) footer mention in a large table does not quarantine",
+          validate_table(big)["passed"] is True, str(validate_table(big)))
+
+
+def guard_text_table_scoring():
+    """Guard BD — archetype-aware quality scoring (quality.score_table).
+    Text tables (Yes/No status grids, name/link catalogues) legitimately have
+    near-zero numeric_density; grading them on it flagged perfectly-extracted
+    tables low_quality and triggered strategy retries that could never help
+    (observed on DARPG Annexure 5: nd=0.17 hc=1.0 fill=0.96 -> 0.66). The
+    text branch is conservative: it requires the table to be FILLED and
+    text-dominant, so sparse/fragmented extractions keep the strict formula."""
+    print("Guard BD — text-table scoring branch (extract/quality.score_table)")
+    import pandas as pd
+    from backend.app.extract.quality import score_table
+
+    # (a) well-extracted text table (Annexure-5 shape): text branch, high score
+    text_df = pd.DataFrame({
+        "s_no": ["1", "2", "3", "4"],
+        "name_state": ["Kerala", "Odisha", "Punjab", "Assam"],
+        "portal_type": ["State Portal", "CPGRAMS", "CPGRAMS", "State Portal"],
+        "integrated": ["Yes", "Yes", "No", "Yes"],
+    })
+    q = score_table(text_df)
+    check("(a) filled text table enters text_mode", q["text_mode"] is True, str(q))
+    check("(a) text table scores high (was nd-punished before)",
+          q["score"] >= 0.85, str(q))
+
+    # (b) numeric table: statistical formula unchanged, text_mode off
+    num_df = pd.DataFrame({
+        "state": ["Kerala", "Odisha"],
+        "receipts": ["1200", "3400"],
+        "disposal": ["1100", "3300"],
+        "pending": ["100", "100"],
+    })
+    q2 = score_table(num_df)
+    check("(b) numeric table keeps statistical formula", q2["text_mode"] is False, str(q2))
+
+    # (c) sparse alphabetic debris must NOT sneak into the text branch
+    sparse = pd.DataFrame({
+        "col": ["abc", "", "", ""],
+        "col_2": ["", "", "xy", ""],
+        "col_3": ["", "", "", ""],
+    })
+    q3 = score_table(sparse)
+    check("(c) sparse fragments stay on the strict formula (fill gate)",
+          q3["text_mode"] is False and q3["score"] < 0.5, str(q3))
+
+    # (d) fiscal-year ranges / currency amounts / dates are clean VALUES —
+    # a grants table full of them must not score numeric_density 0.0
+    # (observed: DARPG Sevottam-grants annexure at 0.43 across ~10 reports)
+    grants = pd.DataFrame({
+        "institute": ["YASHADA", "MGSIPA", "ATI Kerala", "HIPA"],
+        "fy": ["2024-25", "2023-24", "2024-25", "2023-24"],
+        "sanctioned": ["Rs. 40 lakh", "Rs. 25 lakh", "₹ 12.5 Cr", "1,234 crore"],
+        "date": ["01.04.2024", "31/12/2023", "15.06.2024", "01.01.2024"],
+    })
+    q4 = score_table(grants)
+    check("(d) year-range/currency/date cells count as clean values",
+          q4["numeric_density"] >= 0.7, str(q4))
+    check("(d) grants table scores well (was 0.43-class before)",
+          q4["score"] >= 0.80, str(q4))
+
+
+def guard_month_header_recovery():
+    """Guard BE — month-name header rows beat leading chart-axis debris.
+
+    CPGRAMS feedback pages export a chart above the grid, leaving sparse
+    numeric debris rows ("2000 | | 2508") on top of the real "Jan .. Dec"
+    header. The debris matched the year-row rule, cutting the header band
+    short and turning all 13 columns into col_N fallbacks. A row of month
+    names is now the strongest header signal, and all-numeric rows above it
+    are excluded from column naming (dec_2023 p11 "Feedback marked")."""
+    print("Guard BE — buried month header (debris rows above 'Jan .. Dec')")
+    import pandas as pd
+    from backend.app.cleaning.header_detector import detect_header_rows, is_month_header_row
+
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    # (a) synthetic: debris row + duplicated month band + percentage data
+    df = pd.DataFrame([
+        ["2000", "", "", "", "2508", "", "", "", "", "", "", "", ""],
+        [""] + months,
+        ["Month"] + months,
+        ["E", "17%", "17%", "16%", "14%", "15%", "13%", "13%", "14%", "15%", "15%", "16%", "15%"],
+        ["VG", "8%", "8%", "9%", "9%", "10%", "10%", "10%", "11%", "11%", "10%", "11%", "11%"],
+    ])
+    check("(a) header band reaches past the debris to the LAST month row",
+          detect_header_rows(df) == 3, f"got {detect_header_rows(df)}")
+    check("(a) month row recognised", is_month_header_row(df.iloc[1]) is True, "")
+    check("(a) data row not month-like", is_month_header_row(df.iloc[3]) is False, "")
+
+    # (b) real page: dec_2023 p11 "Feedback marked Excellent/Very Good"
+    items = _pipeline(os.path.join(ROOT, "Testpdfs/cpgram_dec2023_p11.pdf"))
+    check("(b) table extracted", bool(items), "none")
+    if items:
+        cols = list(items[0]["df"].columns)
+        check("(b) 12 month columns named (was 13/13 col_N)",
+              cols[1:] == [m.lower() for m in months], f"got {cols}")
+
+
+def guard_lattice_header_band_recovery():
+    """Guard BF — lattice tables whose header band sits ABOVE the ruled grid.
+
+    DARPG annexures rule only the data rows; the 3-line interleaved header
+    ("S. No. | Name of State/UT | Brought Forward | ... | ACT (in days)")
+    lives outside camelot's bbox, so every measure column fell back to
+    code_N / value. The stream-flavor positional header recovery now also
+    runs on lattice tables (gated on the RAW grid being headerless, band
+    cropped at the exact grid top so no data row leaks in).
+
+    Also pins the tightened code-role heuristic: bare 3-4 digit integers are
+    only a "code" when fixed-width or zero-padded — varied-width counts
+    (grievance receipts) are measures. NCO dotted codes stay codes."""
+    print("Guard BF — lattice header-band recovery + code-vs-count roles")
+    import pandas as pd
+    from backend.app.standardization.column_namer import infer_role
+
+    # (a) real page: aug-2025 p26, Annexures 2.4 + 2.5
+    items = _pipeline(os.path.join(ROOT, "Testpdfs/cpgram_aug2025_p26.pdf"))
+    check("(a) two tables extracted", len(items) == 2, f"got {len(items)}")
+    if len(items) == 2:
+        c24 = list(items[0]["df"].columns)
+        check("(a) Annexure 2.4 fully named (was 7/9 generic)",
+              c24 == ["s_no", "name_state", "brought_forward", "receipts",
+                      "total_grievances", "disposed", "pending", "act_days",
+                      "pending_percentage"], f"got {c24}")
+        c25 = list(items[1]["df"].columns)
+        check("(a) Annexure 2.5 fully named (was 5/8 generic)",
+              c25 == ["s_no", "name_state", "brought_forward", "receipts",
+                      "total_grievances", "disposed", "pending", "pending_days"],
+              f"got {c25}")
+
+    # (b) varied-width 3-4 digit counts are NOT codes
+    counts = pd.Series(["1280", "135", "1415", "120", "2285", "467"])
+    check("(b) grievance counts not misread as code", infer_role(counts) != "code",
+          f"got {infer_role(counts)}")
+
+    # (c) classification codes keep their role: fixed-width and zero-padded
+    check("(c) fixed-width group codes stay code",
+          infer_role(pd.Series(["111", "112", "121", "122"])) == "code", "")
+    check("(c) zero-padded codes stay code",
+          infer_role(pd.Series(["0110", "0121", "1210", "232"])) == "code", "")
+    check("(c) dotted NCO codes stay code",
+          infer_role(pd.Series(["1111.0100", "1111.10", "1112.02"])) == "code", "")
+
+
+def guard_crushed_month_redistribution():
+    """Guard BG — month labels crushed into one lattice header cell.
+
+    dec_2025 p5 "2.2 Month-wise Status": lattice merged four (and six) month
+    labels into single header cells ("Feb'25 Mar'25 Apr'25 May'25") while the
+    data cells stayed separate, so neighbouring columns fell back to
+    col/value_N. When the month tokens across the header band, in reading
+    order, cover the trailing generic/month-named columns, they are now
+    redistributed one month per column."""
+    print("Guard BG — crushed month-header redistribution")
+    import pandas as pd
+    from backend.app.cleaning.header_builder import _redistribute_crushed_months
+
+    # (a) synthetic: 1 + crushed-4 + 1 + crushed-6 month tokens over 12 cols
+    header_df = pd.DataFrame([
+        ["", "Jan'25", "", "Feb'25 Mar'25 Apr'25 May'25", "", "", "Jun'25",
+         "", "Jul'25 Aug'25 Sep'25 Oct'25 Nov'25 Dec'25", "", "", "", ""],
+    ])
+    data = pd.DataFrame([["Receipts"] + [str(100 + i) for i in range(12)]],
+                        columns=["col"] + [f"col_{i}" for i in range(1, 13)])
+    out = _redistribute_crushed_months(data.copy(), header_df, set())
+    check("(a) months distributed positionally",
+          list(out.columns) == ["col", "jan", "feb", "mar", "apr", "may", "jun",
+                                "jul", "aug", "sep", "oct", "nov", "dec"],
+          f"got {list(out.columns)}")
+
+    # (b) no crush evidence (every cell a single month) -> untouched
+    single = pd.DataFrame([["", "Jan", "Feb", "Mar"]])
+    data2 = pd.DataFrame([["x", "1", "2", "3"]],
+                         columns=["col", "col_1", "col_2", "col_3"])
+    out2 = _redistribute_crushed_months(data2.copy(), single, set())
+    check("(b) untouched without a crushed cell",
+          list(out2.columns) == ["col", "col_1", "col_2", "col_3"],
+          f"got {list(out2.columns)}")
+
+    # (c) more month tokens than overwritable columns -> untouched
+    #     (never guess alignment)
+    short = pd.DataFrame([["", "Feb'25 Mar'25 Apr'25 May'25 Jun'25 Jul'25", "", ""]])
+    out3 = _redistribute_crushed_months(data2.copy(), short, set())
+    check("(c) untouched on count mismatch",
+          list(out3.columns) == ["col", "col_1", "col_2", "col_3"],
+          f"got {list(out3.columns)}")
+
+    # (d) real page: dec_2025 p5
+    items = _pipeline(os.path.join(ROOT, "Testpdfs/cpgram_dec2025_p5.pdf"))
+    month_tables = [i for i in items
+                    if list(i["df"].columns)[1:] == ["jan", "feb", "mar", "apr", "may", "jun",
+                                                     "jul", "aug", "sep", "oct", "nov", "dec"]]
+    check("(d) month-wise status table carries 12 real month columns",
+          bool(month_tables), f"got {[list(i['df'].columns) for i in items]}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -1812,7 +2084,10 @@ if __name__ == "__main__":
                    guard_title_recovery, guard_reference_tables,
                    guard_extract_retry, guard_recheck_quarantine,
                    guard_page_scope_real_pdf,
-                   guard_wrapped_header_reconstruction)
+                   guard_wrapped_header_reconstruction, guard_text_table_scoring,
+                   guard_month_header_recovery, guard_lattice_header_band_recovery,
+                   guard_crushed_month_redistribution, guard_fragment_quarantine,
+                   guard_frame_title_recovery)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

@@ -8,6 +8,9 @@ MERGED_RUN = re.compile(
 # small integer: page number range 1-999 (no decimals, no commas, no %)
 _PAGE_NUM = re.compile(r"^\d{1,3}$")
 
+# print footer leaked into the grid: "13 | P a g e" (letter-spaced "Page")
+_PAGE_FOOTER = re.compile(r"\d+\s*\|\s*P\s+a\s+g\s+e", re.IGNORECASE)
+
 # honorifics found in staff/acknowledgement lists
 _HONORIFIC = re.compile(
     r"\b(Shri|Smt|Dr|Prof|Sh\.|Km\.|Shrimati|Ku\.)\b",
@@ -300,6 +303,35 @@ def validate_table(df):
         return {
             "passed": False,
             "reason": "mostly_empty"
+        }
+
+    # single-column list: an infographic / callout box where only ONE column
+    # carries any content and the rest are camelot grid ghosts (observed:
+    # "PMKISAN related issues Receipts: 509 | 60.74%" bullet lists extracted
+    # as 10x3 with two fully-empty columns). A table needs at least two
+    # populated columns; a one-column text list is prose, not data. The
+    # per-column emptiness bar is 0.9 (not 1.0) so a stray footer fragment
+    # in an otherwise-dead column doesn't rescue it.
+    col_texts = [sdf.iloc[:, j].tolist() for j in range(cols)]
+    populated_cols = sum(
+        1 for col in col_texts
+        if sum(1 for v in col if v.strip() in ("", "nan", "None")) / max(len(col), 1) < 0.9
+    )
+    if populated_cols < 2:
+        return {
+            "passed": False,
+            "reason": "single_column_list"
+        }
+
+    # page-footer debris: tiny fragments carrying the print footer
+    # ("13 | P a g e") are page-furniture that leaked into the grid — the
+    # letter-spaced "P a g e" is unmistakable print-layout artifact, never
+    # table data. Only small fragments are gated (a real table that merely
+    # MENTIONS a page footer in one of hundreds of cells is untouched).
+    if total <= 30 and any(_PAGE_FOOTER.search(c) for c in cells):
+        return {
+            "passed": False,
+            "reason": "page_footer_fragment"
         }
 
     # crushed extraction: cells holding runs of values from many rows

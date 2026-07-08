@@ -57,9 +57,21 @@ def infer_role(series):
         return None
     n = len(vals)
 
-    code = sum(1 for v in vals if _DOTTED_CODE.match(v) or _GROUP_CODE.match(v))
-    if code / n >= 0.6:
+    dotted = sum(1 for v in vals if _DOTTED_CODE.match(v))
+    if dotted / n >= 0.6:
         return "code"
+
+    # bare 3-4 digit integers are only codes when they look ASSIGNED rather
+    # than measured: classification codes are fixed-width (every NCO group
+    # code in a column has the same digit count, "111"/"112" or
+    # "1111"/"1112") or carry leading zeros. A column of 3-4 digit COUNTS
+    # (grievance receipts: 186, 1280, 2285) varies in width — that is a
+    # measure, and calling it "code" mislabels it.
+    group = [v for v in vals if _GROUP_CODE.match(v)]
+    if group and len(group) / n >= 0.6:
+        widths = {len(v) for v in group}
+        if len(widths) == 1 or any(v.startswith("0") for v in group):
+            return "code"
 
     level = sum(1 for v in vals if v.lower() in _LEVEL_WORDS)
     if level / n >= 0.6:

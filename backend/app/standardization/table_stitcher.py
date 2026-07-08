@@ -16,9 +16,13 @@ def _named_frac(cols):
 
     cols = [str(c) for c in cols]
 
-    # unnamed fallbacks appear as both "col" and "col_<n>"
+    # machine fallbacks: clean_headers names unrecognizable columns "col",
+    # "value", "code" or "label" (numbered when repeated). None of these
+    # carry identity — a table whose columns are all value_N is exactly as
+    # headerless as one whose columns are all col_N, and the continuation
+    # test below must see both the same way.
     return sum(
-        not re.fullmatch(r"col(_\d+)?", c) for c in cols
+        not re.fullmatch(r"(col|value|code|label)(_\d+)?", c) for c in cols
     ) / max(len(cols), 1)
 
 
@@ -122,8 +126,13 @@ def _continues(prev, cur):
     # print data from row one on follow-on pages — no title, no header,
     # every column an unnamed fallback. Same width + adjacent page +
     # a substantial, titled predecessor is the only signal available.
+    # A WEAK name on the continuation doesn't block: with no header row,
+    # title extraction routinely promotes a data cell ("Consumer Affairs",
+    # a ministry name from the first row) into a bogus title — only a
+    # strong Table X.Y / Annexure heading is evidence of a genuinely
+    # separate table.
     if (
-        not cur["name"]
+        not _strong_title(cur["name"])
         and _named_frac(cols_b) < 0.2
         and bool(prev["name"])
         and len(a) >= 4

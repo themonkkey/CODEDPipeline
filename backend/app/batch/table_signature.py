@@ -14,11 +14,34 @@ for confirmation before any data is stacked.
 """
 import difflib
 import hashlib
+import re
 
 from backend.app.standardization.table_stitcher import _strong_title, normalize_colname
 from backend.app.agents import grouping_agent
 
 _GENERIC = {"col", "value", "label", "nco", ""}
+# Rolling-window reports embed the month in column names ("status_oct",
+# "receipts_nov"), and the whole set shifts by one month every issue — so the
+# SAME table never shares a single column name with itself across periods and
+# fragments into per-period singletons. For identity comparison only, strip
+# month tokens (and bare years) so "status_oct" and "status_nov" both become
+# "status". Data columns are untouched; this affects grouping, not output.
+_MONTH_TOKEN = re.compile(
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(uary|ruary|ch|il|e|y|ust|tember|ober|ember)?"
+)
+_YEAR_TOKEN = re.compile(r"(19|20)\d{2}")
+
+
+def _strip_period_tokens(n):
+    """Remove month/year tokens from a normalized column name. Normalized
+    names have no separators (normalize_colname strips them), so month names
+    appear as embedded substrings ("statusoct"). Only strip when the residue
+    keeps some identity (>= 2 chars) — a column literally named "jan" or
+    "2024" reduces to "" and is treated like a generic name (dropped from
+    the identity set) rather than colliding every month-named column into
+    one empty key."""
+    stripped = _YEAR_TOKEN.sub("", _MONTH_TOKEN.sub("", n))
+    return stripped if len(stripped) >= 2 else ""
 # loose enough to survive a single added/dropped column year-to-year, strict
 # enough not to fuse genuinely different tables of similar width.
 _JACCARD = 0.6
@@ -32,7 +55,8 @@ _FUZZY_COL = 0.88
 
 
 def _real_colset(columns):
-    """Normalized, generic-stripped set of a table's column names."""
+    """Normalized, generic-stripped, period-token-stripped set of a table's
+    column names — the table's identity for cross-PDF comparison."""
     out = set()
     for c in columns:
         n = normalize_colname(c)
@@ -40,7 +64,9 @@ def _real_colset(columns):
         base = n.rstrip("0123456789")
         if base in _GENERIC or n in _GENERIC:
             continue
-        out.add(n)
+        n = _strip_period_tokens(n)
+        if n:
+            out.add(n)
     return out
 
 
@@ -83,8 +109,43 @@ def _fuzzy_jaccard(a, b):
     return intersection / max(union, 1)
 
 
+# Rolling-window reports embed the covered range in the TITLE too:
+# "Annexure 1.3 Maximum Number of Receipts Jan to April," becomes
+# "... January to August," five issues later — same table, different strong
+# title every month, so title-based grouping splits one panel into a group
+# per issue (observed: 12 groups for one Annexure 1.3 across 44 reports).
+# Strip a trailing month/range/year suffix from the RAW title before
+# normalizing. Anchored at the end so month names in the middle of a real
+# title ("... in March quarter review of X") are never touched.
+_MON = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_TITLE_DATE_SUFFIX = re.compile(
+    rf"[\s,–-]*{_MON}(?:\s*(?:to|till|[-–])\s*{_MON})?[\s,]*(?:\d{{4}})?[\s,]*$",
+    re.IGNORECASE,
+)
+
+
 def _norm_title(name):
-    return normalize_colname(name) if name else ""
+    if not name:
+        return ""
+    return normalize_colname(_TITLE_DATE_SUFFIX.sub("", str(name)))
+
+
+def _titles_same(a, b):
+    """Strong-title identity, tolerant of the two noise modes real reports
+    show: a trailing date-range suffix (stripped in _norm_title) and title
+    TRUNCATION by the extractor ("Annexure 1.3 Maximum Number" vs the full
+    "Annexure 1.3 Maximum Number of Receipts"). A prefix match only counts
+    when the first divergent character is a letter — a digit there means the
+    shorter title's trailing NUMBER continues ("Annexure 1" vs "Annexure
+    1.3" normalizes to annexure1 / annexure13), which is a different
+    annexure, never a truncation."""
+    na, nb = _norm_title(a), _norm_title(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    short, long = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(short) >= 8 and long.startswith(short) and long[len(short)].isalpha()
 
 
 def _matches(member, group):
@@ -99,7 +160,7 @@ def _matches(member, group):
     m_strong = _strong_title(member["name"])
     g_strong = _strong_title(group["title"])
     if m_strong and g_strong:
-        if _norm_title(member["name"]) == _norm_title(group["title"]):
+        if _titles_same(member["name"], group["title"]):
             return True, "title"
         return False, None
     # both untitled (or weak): cluster on column content (fuzzy-aware)

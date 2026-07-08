@@ -2000,6 +2000,208 @@ def guard_fuzzy_jaccard_bounds():
     check("(c) identical sets score exactly 1.0", abs(score3 - 1.0) < 1e-9, f"score={score3}")
 
 
+def guard_month_token_grouping():
+    """Guard AZ — rolling-window month columns must not fragment a panel.
+    DARPG's "Month-wise Status of Grievances" names its columns by month
+    ("status_oct", "receipts_nov") and the whole set shifts by one month each
+    issue, so no column name ever repeats across periods — pre-fix, the same
+    table landed in a new singleton group every month. _strip_period_tokens
+    removes month/year tokens from the identity comparison (data columns are
+    untouched) so consecutive issues group deterministically, with no model
+    call — this replaces the grouping agent for the rolling-window case."""
+    print("Guard AZ — month-token stripping in group identity (table_signature)")
+    from backend.app.batch.table_signature import group_tables, _strip_period_tokens
+
+    check("month token stripped from normalized name",
+          _strip_period_tokens("statusoct") == "status", _strip_period_tokens("statusoct"))
+    check("bare month reduces to '' (treated generic, not collided)",
+          _strip_period_tokens("jan") == "", repr(_strip_period_tokens("jan")))
+    check("year stripped", _strip_period_tokens("receipts2024") == "receipts",
+          _strip_period_tokens("receipts2024"))
+
+    def _mani(period, cols):
+        return {"pdf": f"{period}.pdf", "stem": period, "period": period,
+                "tables": [{"table_id": 1, "name": "Month-wise Status of Grievances",
+                            "rows": 6, "cols": len(cols), "columns": cols,
+                            "archetype": "statistical", "csv": "x.csv"}]}
+
+    # real column shapes from the DARPG Jan/Mar/Apr 2026 reports (the case
+    # that fragmented into singletons before this fix)
+    groups = group_tables([
+        _mani("2026-01", ["label", "status_aug", "receipts_sep", "disposal_oct", "nov", "pendency_dec", "jan"]),
+        _mani("2026-03", ["label", "oct", "status_nov", "receipts_dec", "disposal_jan", "pendency_feb", "mar"]),
+        _mani("2026-04", ["label", "oct", "status_nov", "receipts_dec", "disposal_jan", "pendency_feb", "mar", "apr"]),
+    ])
+    multi = [g for g in groups if g["n_periods"] == 3]
+    check("3 shifted-month issues group into ONE panel, not 3 singletons",
+          len(multi) == 1 and multi[0]["n_members"] == 3,
+          f"groups: {[(g['n_periods'], g['label'][:40]) for g in groups]}")
+
+
+def guard_wrapped_header_reconstruction():
+    """Guard BA — narrow-cell wrapped headers + headerless continuations
+    (the "23/24 generic columns" failure on DARPG Feb 2026 pp.9-15).
+    Two coupled behaviors:
+    (1) universal_cleaner joins MID-WORD line wraps ("Grie\\nvanc\\nes ") with
+        nothing instead of a space — real word boundaries survive as literal
+        trailing spaces, so "Grievances brought forward" comes out readable
+        instead of "Grie vanc es brou ght forw ard" soup.
+    (2) table_stitcher treats all-fallback-named (value_N/code_N, not just
+        col_N) follow-on pages as headerless continuations, even when a data
+        cell got promoted into a bogus weak title, so they inherit the header
+        page's real column names instead of shipping as separate garbage
+        tables."""
+    print("Guard BA — wrapped-header reconstruction + fallback-named continuation")
+    import pandas as pd
+    from backend.app.cleaning.universal_cleaner import clean_dataframe
+    from backend.app.standardization.table_stitcher import _named_frac, stitch_tables
+
+    # (1) mid-word wrap rejoin, word boundaries preserved
+    raw = pd.DataFrame([["Grie\nvanc\nes \nbrou\nght \nforw\nard",
+                         "Tot\nal \nNu\nmb\ner \nof \nAp\npea\nls \nFil\ned",
+                         "Total\nGrievances", "100\n4"]])
+    got = clean_dataframe(raw).iloc[0].tolist()
+    check("(1) mid-word wraps rejoined with boundaries intact",
+          got[0] == "Grievances brought forward", repr(got[0]))
+    check("(1) multi-fragment name fully reconstructed",
+          got[1] == "Total Number of Appeals Filed", repr(got[1]))
+    check("(1) whole-word newline still becomes a space (uppercase next)",
+          got[2] == "Total Grievances", repr(got[2]))
+    check("(1) stacked digits NOT glued (old behavior preserved)",
+          got[3] == "100 4", repr(got[3]))
+
+    # (2) value_N/code_N count as fallback names now
+    check("(2) all-value_N columns read as unnamed",
+          _named_frac(["value", "value_2", "code", "label"]) == 0.0,
+          str(_named_frac(["value", "value_2", "code", "label"])))
+
+    # (2) a fallback-named follow-on page with a bogus weak title merges into
+    # the titled header page; a strong-titled neighbour does NOT.
+    header_df = pd.DataFrame({"ministry": ["A", "B", "C", "D"],
+                              "grievances_received": [1, 2, 3, 4],
+                              "resolved_within_timeline": [5, 6, 7, 8]})
+    cont_df = pd.DataFrame({"label": ["E", "F"], "value": [9, 10], "value_2": [11, 12]})
+    separate_df = pd.DataFrame({"label": ["G", "H"], "value": [13, 14], "value_2": [15, 16]})
+    stitched = stitch_tables([
+        {"table_id": 1, "name": "2.2 Group A: Indicator Wise Scores", "page": 1,
+         "df": header_df, "titled": True, "flavor": ""},
+        {"table_id": 2, "name": "Consumer Affairs", "page": 2,
+         "df": cont_df, "titled": True, "flavor": ""},
+        {"table_id": 3, "name": "Annexure 3.1 Top Ministries", "page": 3,
+         "df": separate_df, "titled": True, "flavor": ""},
+    ])
+    check("(2) bogus-weak-titled fallback page merges into its header page",
+          len(stitched) == 2 and stitched[0]["df"].shape[0] == 6,
+          f"{[(s['name'][:30], s['df'].shape) for s in stitched]}")
+    check("(2) merged continuation inherits the real column names",
+          list(stitched[0]["df"].columns)[:2] == ["ministry", "grievances_received"],
+          str(list(stitched[0]["df"].columns)))
+    check("(2) strong-titled neighbour stays a separate table",
+          any(s["name"].startswith("Annexure") for s in stitched),
+          f"{[s['name'][:30] for s in stitched]}")
+
+
+def guard_title_date_suffix_grouping():
+    """Guard BB — title-embedded date ranges must not fragment a panel.
+    CPGRAM state reports retitle the same annexure every issue ("Annexure 1.3
+    Maximum Number of Receipts Jan to April," -> "... January to August,")
+    and the extractor sometimes truncates ("Annexure 1.3 Maximum Number").
+    Observed on the real 44-report corpus: ONE table split into 12 groups.
+    _norm_title strips the trailing date suffix and _titles_same tolerates
+    letter-boundary truncation — while "Annexure 1" vs "Annexure 1.3" (digit
+    at the divergence point) must stay distinct tables."""
+    print("Guard BB — title date-suffix stripping + truncation tolerance (table_signature)")
+    from backend.app.batch.table_signature import _norm_title, _titles_same, group_tables
+
+    check("trailing 'Jan to April,' stripped",
+          _norm_title("Annexure 1.3 Maximum Number of Receipts Jan to April,")
+          == _norm_title("Annexure 1.3 Maximum Number of Receipts January to August,"),
+          _norm_title("Annexure 1.3 Maximum Number of Receipts Jan to April,"))
+    check("mid-title month NOT stripped (anchor holds)",
+          _norm_title("Review of March quarter performance")
+          == "reviewofmarchquarterperformance",
+          _norm_title("Review of March quarter performance"))
+    check("truncated title matches its full form",
+          _titles_same("Annexure 1.3 Maximum Number",
+                       "Annexure 1.3 Maximum Number of Receipts January to July,"), "")
+    check("Annexure 1 vs Annexure 1.3 stay DISTINCT (digit boundary)",
+          not _titles_same("Annexure 1 Performance of States", "Annexure 1.3 Maximum Number"), "")
+    check("Receipts vs Disposals stay distinct (no prefix relation)",
+          not _titles_same("Annexure 1.3 Maximum Number of Receipts",
+                           "Annexure 1.3 Maximum Number of Disposals"), "")
+
+    def _mani(period, title):
+        cols = ["s_no", "name_state", "receipts", "disposal", "pending"]
+        return {"pdf": f"{period}.pdf", "stem": period, "period": period,
+                "tables": [{"table_id": 1, "name": title, "rows": 8, "cols": len(cols),
+                            "columns": cols, "archetype": "statistical", "csv": "x.csv"}]}
+
+    groups = group_tables([
+        _mani("2024-04", "Annexure 1.3 Maximum Number of Receipts Jan to April,"),
+        _mani("2024-08", "Annexure 1.3 Maximum number of Receipts January to August,"),
+        _mani("2024-12", "Annexure 1.3 Maximum Number"),
+    ])
+    merged = [g for g in groups if g["n_periods"] == 3]
+    check("3 date-suffixed/truncated retitles group into ONE panel",
+          len(merged) == 1 and merged[0]["n_members"] == 3,
+          f"{[(g['n_periods'], g['label'][:45]) for g in groups]}")
+
+
+def guard_engine_scorecard():
+    """Guard BC — engine scorecard (backend/tools/scorecard.py): every score
+    key present, every non-None score inside [0, 100], and the baseline block
+    carries the raw counts so formula changes are visible run-over-run."""
+    print("Guard BC — engine scorecard (scorecard.compute)")
+    import json as _json
+    import shutil
+    import tempfile
+    from backend.tools.scorecard import compute
+
+    workdir = tempfile.mkdtemp()
+    tdir = os.path.join(workdir, "tables", "stub")
+    os.makedirs(tdir)
+    manifest = {
+        "pdf": "stub.pdf", "stem": "stub", "period": "2024-01",
+        "tables": [
+            {"table_id": 1, "name": "Annexure 1 Performance", "page": 1,
+             "columns": ["s_no", "state", "receipts"], "rows": 5, "cols": 3,
+             "extraction_quality": {"score": 0.9},
+             "extract_attempts": [{"strategy": "lattice", "score": 0.5},
+                                   {"strategy": "stream", "score": 0.9}],
+             "extract_best_score": 0.9},
+            {"table_id": 2, "name": None, "page": 2,
+             "columns": ["col", "value", "value_2"], "rows": 4, "cols": 3,
+             "extraction_quality": {"score": 0.5}},
+        ],
+    }
+    with open(os.path.join(tdir, "manifest.json"), "w") as f:
+        _json.dump(manifest, f)
+    with open(os.path.join(workdir, "groups.json"), "w") as f:
+        _json.dump([{"n_members": 2, "n_periods": 2, "confidence": "auto"},
+                    {"n_members": 1, "n_periods": 1, "confidence": "review"}], f)
+    with open(os.path.join(workdir, "quality_report.json"), "w") as f:
+        _json.dump({"checks": {"mean_numeric_readiness": {"value": 0.8}}}, f)
+
+    card = compute(workdir)
+    shutil.rmtree(workdir, ignore_errors=True)
+
+    expected = {"extraction", "retry_effectiveness", "header_naming", "table_titling",
+                "grouping", "panel_depth", "auto_confidence", "numeric_readiness"}
+    check("all score keys present", set(card["scores"]) == expected,
+          str(set(card["scores"]) ^ expected))
+    bad = {k: v for k, v in card["scores"].items()
+           if v is not None and not (0 <= v <= 100)}
+    check("every score in [0, 100]", not bad, str(bad))
+    check("retry improvement counted (1 of 1 retried improved)",
+          card["scores"]["retry_effectiveness"] == 100.0,
+          str(card["scores"]["retry_effectiveness"]))
+    check("fallback columns counted unnamed (3 of 6 named)",
+          card["scores"]["header_naming"] == 50.0, str(card["scores"]["header_naming"]))
+    check("baseline block carries raw counts",
+          card["baseline"]["columns_total"] == 6 and card["baseline"]["tables_retried"] == 1,
+          str(card["baseline"]))
+
+
 def guard_quality_gate_reference_corpus():
     """Guard AY — Loop Spec 3's thresholds validated against a SECOND, real,
     structurally different corpus: the NCO concordance PDF (reference
@@ -2140,7 +2342,9 @@ if __name__ == "__main__":
                    guard_extract_retry, guard_header_agent_verify_retry,
                    guard_batch_quality_gate, guard_recheck_quarantine,
                    guard_group_confidence, guard_fuzzy_jaccard_bounds,
-                   guard_quality_gate_reference_corpus, guard_page_scope_real_pdf)
+                   guard_quality_gate_reference_corpus, guard_page_scope_real_pdf,
+                   guard_month_token_grouping, guard_wrapped_header_reconstruction,
+                   guard_title_date_suffix_grouping, guard_engine_scorecard)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

@@ -33,9 +33,17 @@ _CLEAN_VALUE = re.compile(
     r"|(rs\.?|₹|inr)\s*[\d,]+(\.\d+)?\s*(lakh|lakhs|crore|cr\.?|thousand|k)?"  # Rs. 40 lakh
     r"|[\d,]+(\.\d+)?\s*(lakh|lakhs|crore|cr\.?|%)"            # 1,234 crore / 12 %
     r"|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}"                        # 01.04.2024
+    r"|\d{1,3}[.)]"                                            # serial "1." / "12)"
     r")\)?$",
     re.IGNORECASE,
 )
+# missing-value markers Indian statistical tables print INSIDE the grid:
+# dashes, "NA"/"N.A.", "Nil", dot runs. These are deliberate "no data here"
+# cells, not extraction debris and not content — counting them as filled
+# non-numeric text dragged BOTH numeric_density and text_density on sparse
+# Yes/No/URL status grids (observed: DARPG portal-integration annexure,
+# ~30% "-" cells, scored 0.52 despite a clean extraction).
+_PLACEHOLDER = {"-", "–", "—", "−", "na", "n.a.", "n/a", "nil", "..", "...", "*"}
 _COL_GENERIC = re.compile(r"^(col|value|label)(_\d+)?$")
 # a cell that is recognizably TEXT content (words, names, Yes/No, URLs) —
 # at least two consecutive letters somewhere
@@ -86,12 +94,37 @@ def score_table(df):
 
     non_empty = [str(c).strip() for c in cells if str(c).strip() not in ("", "nan", "None")]
     fill_rate = len(non_empty) / total
+    # judge content quality over CONTENT cells only — explicit missing-value
+    # markers ("-", "NA", "Nil") are neither numbers nor text and must not
+    # dilute the densities. fill_rate above still counts them: the cell IS
+    # deliberately occupied, and extraction did capture it.
+    non_empty = [c for c in non_empty if c.lower() not in _PLACEHOLDER]
     numeric = sum(1 for c in non_empty if _CLEAN_NUM.match(c) or _CLEAN_VALUE.match(c))
     numeric_density = numeric / len(non_empty) if non_empty else 0.0
 
-    cols = [str(c) for c in df.columns]
-    meaningful = sum(1 for c in cols if not _COL_GENERIC.match(c.lower()))
-    header_coherence = meaningful / len(cols) if cols else 0.0
+    # RAW (pre-header) frames carry a plain integer RangeIndex as columns, so
+    # the "generic name" test below would be trivially 1.0 there (see module
+    # docstring) — masking exactly the failure the retry loop exists to catch:
+    # a hallucinated grid whose phantom columns are almost entirely empty
+    # (observed: DARPG annexure where lattice produced 21 columns, 6 real —
+    # fill_rate 0.34 hidden behind hc=1.0 scored 0.768, so no retry ever ran
+    # while pdfplumber had the clean 11-column grid). For such frames the
+    # honest structural analogue of header coherence is COLUMN coherence:
+    # the fraction of columns that are substantially populated. Named frames
+    # (post-pipeline) keep the original name-based formula unchanged.
+    if all(isinstance(c, int) for c in df.columns):
+        ncols = df.shape[1]
+        populated_cols = 0
+        for j in range(ncols):
+            col_vals = [str(v).strip() for v in df.iloc[:, j].tolist()]
+            filled = sum(1 for v in col_vals if v not in ("", "nan", "None"))
+            if col_vals and filled / len(col_vals) >= 0.5:
+                populated_cols += 1
+        header_coherence = populated_cols / ncols if ncols else 0.0
+    else:
+        cols = [str(c) for c in df.columns]
+        meaningful = sum(1 for c in cols if not _COL_GENERIC.match(c.lower()))
+        header_coherence = meaningful / len(cols) if cols else 0.0
 
     texty = sum(1 for c in non_empty if _TEXTY.search(c))
     text_density = texty / len(non_empty) if non_empty else 0.0
@@ -104,7 +137,22 @@ def score_table(df):
     if text_mode:
         score = round(0.4 * text_density + 0.4 * header_coherence + 0.2 * fill_rate, 3)
     else:
-        score = round(0.4 * numeric_density + 0.4 * header_coherence + 0.2 * fill_rate, 3)
+        # Mixed tables: dimension columns (state / district / category /
+        # scheme names) are legitimate CONTENT, not extraction dirt. Grading
+        # them on numeric_density alone capped a perfectly-extracted
+        # "state | category | count" table at 0.76 — a false low_quality
+        # flag and unwinnable retries. A clean text LABEL (short, worded)
+        # counts toward content density; long sentence-like cells do not,
+        # so a shredded paragraph still scores low.
+        clean_label = sum(
+            1 for c in non_empty
+            if not (_CLEAN_NUM.match(c) or _CLEAN_VALUE.match(c))
+            and _TEXTY.search(c) and len(c.split()) <= 6
+        )
+        content_density = (
+            (numeric + clean_label) / len(non_empty) if non_empty else 0.0
+        )
+        score = round(0.4 * content_density + 0.4 * header_coherence + 0.2 * fill_rate, 3)
     return {
         "score": score,
         "numeric_density": round(numeric_density, 3),

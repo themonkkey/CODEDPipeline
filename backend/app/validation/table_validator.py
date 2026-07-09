@@ -187,7 +187,12 @@ def _is_prose(sdf):
         return False
     sentence = sum(1 for c in cells if len(c.split()) >= 6 and _SENTENCE_CELL.search(c))
     numeric = sum(1 for c in cells if _CLEAN_NUM.match(c))
-    return sentence / len(cells) >= 0.4 and numeric / len(cells) < 0.1
+    # the numeric bar is a COUNT floor as well as a fraction: a bullet-note
+    # fragment of 4 cells where one stray cell is a lone digit ("2 | • |
+    # sentence | sentence") is still prose — one number is not a value column.
+    return sentence / len(cells) >= 0.4 and (
+        numeric / len(cells) < 0.1 or numeric <= 1
+    )
 
 
 # a cell holding only small column-index tokens: "1", "(2)", "1 2 3"

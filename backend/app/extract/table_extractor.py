@@ -624,6 +624,60 @@ def _stream_retry(pdf_path, page, plumber_pdf):
     return best
 
 
+def _plumber_retry(plumber_pdf, page_num, bbox=None):
+    """Loop Spec 1, strategy: pdfplumber's own table finder. A genuinely
+    different engine from both camelot flavors — it intersects the page's
+    ruling lines itself, so it recovers the true column grid where lattice
+    hallucinates phantom columns from decorative rules (observed: a 21-column
+    lattice frame with 6 real columns of data vs pdfplumber's clean 11-column
+    grid on the same DARPG annexure page) and where stream's whitespace
+    clustering merges columns. Tried for NON-scanned pages after stream, under
+    the same max-3-attempts cap and keep-max-score rule as every strategy.
+
+    When the camelot bbox of the table being retried is known, only pdfplumber
+    tables vertically overlapping it are considered, so a page holding several
+    tables can never hand this retry a DIFFERENT table's grid (which would
+    duplicate it downstream). Returns (df, score) or None."""
+    if plumber_pdf is None:
+        return None
+    try:
+        import pandas as pd
+
+        page = plumber_pdf.pages[page_num - 1]
+        height = page.height
+
+        cam_top = cam_bottom = None
+        if bbox is not None:
+            # camelot bbox is PDF coords (y from bottom); pdfplumber top-down
+            cam_top = height - max(bbox[1], bbox[3])
+            cam_bottom = height - min(bbox[1], bbox[3])
+
+        best = None
+        for tbl in page.find_tables():
+            if cam_top is not None:
+                t_top, t_bottom = tbl.bbox[1], tbl.bbox[3]
+                overlap = min(cam_bottom, t_bottom) - max(cam_top, t_top)
+                span = min(cam_bottom - cam_top, t_bottom - t_top)
+                if span <= 0 or overlap < 0.3 * span:
+                    continue
+
+            grid = tbl.extract()
+            if not grid or len(grid) < 2 or len(grid[0]) < 2:
+                continue
+
+            # pdfplumber uses None for empty / merged-span cells — normalize to
+            # the empty strings every other strategy produces
+            rows = [["" if c is None else str(c) for c in row] for row in grid]
+            df = pd.DataFrame(rows)
+            score = score_table(df)["score"]
+            if best is None or score > best[1]:
+                best = (df, score)
+
+        return best
+    except Exception:
+        return None
+
+
 def _consider(attempts, best, candidate_df, candidate_score, candidate_strategy):
     """Record one extraction attempt and apply Loop Spec 1's no-progress
     rule: a candidate only becomes the new best when it STRICTLY beats the
@@ -778,11 +832,18 @@ def extract_tables(pdf_path, pages=None):
                 stream_strategy = "ocr" if stream_ocr else "stream"
                 best = _consider(attempts, best, stream_df, stream_score, stream_strategy)
 
-        if best["score"] < LOW_QUALITY_THRESHOLD and len(attempts) < 3 and _is_scanned_page(page):
-            ocr_df = _ocr_extract_grid(table, plumber_pdf)
-            if ocr_df is not None:
-                ocr_score = score_table(ocr_df)["score"]
-                best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
+        # 3rd attempt: OCR only helps scanned pages; on text-layer pages the
+        # third genuinely-different engine is pdfplumber's table finder.
+        if best["score"] < LOW_QUALITY_THRESHOLD and len(attempts) < 3:
+            if _is_scanned_page(page):
+                ocr_df = _ocr_extract_grid(table, plumber_pdf)
+                if ocr_df is not None:
+                    ocr_score = score_table(ocr_df)["score"]
+                    best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
+            else:
+                pl = _plumber_retry(plumber_pdf, page, getattr(table, "_bbox", None))
+                if pl is not None:
+                    best = _consider(attempts, best, pl[0], pl[1], "plumber")
 
         kept.append(_build_kept_item(
             page, best["df"], getattr(table, "_bbox", None),
@@ -834,15 +895,18 @@ def extract_tables(pdf_path, pages=None):
                 # top of this function) and found nothing keepable on this
                 # page, so it counts as a spent attempt; stream is attempt 2.
                 # A scanned page with a still-low stream score gets the 3rd.
-                if (
-                    best["score"] < LOW_QUALITY_THRESHOLD
-                    and len(attempts) < 3
-                    and _is_scanned_page(page)
-                ):
-                    ocr_df = _ocr_extract_grid(table, plumber_pdf)
-                    if ocr_df is not None:
-                        ocr_score = score_table(ocr_df)["score"]
-                        best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
+                if best["score"] < LOW_QUALITY_THRESHOLD and len(attempts) < 3:
+                    if _is_scanned_page(page):
+                        ocr_df = _ocr_extract_grid(table, plumber_pdf)
+                        if ocr_df is not None:
+                            ocr_score = score_table(ocr_df)["score"]
+                            best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
+                    else:
+                        pl = _plumber_retry(
+                            plumber_pdf, page, getattr(table, "_bbox", None)
+                        )
+                        if pl is not None:
+                            best = _consider(attempts, best, pl[0], pl[1], "plumber")
 
                 kept.append(_build_kept_item(
                     page, best["df"], getattr(table, "_bbox", None),
@@ -853,7 +917,10 @@ def extract_tables(pdf_path, pages=None):
     # each other, extracted as one wide frame) into separate tables. Done here,
     # before table_ids are assigned, so every sub-table gets a unique sequential
     # id and nothing downstream needs to change.
-    from backend.app.cleaning.panel_splitter import split_side_by_side
+    from backend.app.cleaning.panel_splitter import (
+        split_side_by_side,
+        split_stacked_tables,
+    )
 
     expanded = []
     for t in kept:
@@ -863,6 +930,25 @@ def extract_tables(pdf_path, pages=None):
         else:
             for panel in panels:
                 expanded.append({**t, "dataframe": panel})
+    kept = expanded
+
+    # Expand vertically STACKED tables (several annexures printed one under
+    # another, extracted as one frame). Parts after the first carry the
+    # interior title row's text as their caption — it names the buried table
+    # far more reliably than the page-band search, which can only see the
+    # FIRST title above the shared bbox.
+    expanded = []
+    for t in kept:
+        parts = split_stacked_tables(t["dataframe"])
+        if len(parts) == 1:
+            expanded.append(t)
+        else:
+            for part_df, part_title in parts:
+                expanded.append({
+                    **t,
+                    "dataframe": part_df,
+                    **({"caption_override": part_title} if part_title else {}),
+                })
     kept = expanded
 
     kept.sort(key=lambda t: t["page"])
@@ -875,7 +961,8 @@ def extract_tables(pdf_path, pages=None):
             "table_id": i + 1,
             "page": t["page"],
             "dataframe": t["dataframe"],
-            "caption": _extract_caption(plumber_pdf, t["page"], t["bbox"]),
+            "caption": t.get("caption_override")
+            or _extract_caption(plumber_pdf, t["page"], t["bbox"]),
             "flavor": t["flavor"],
             # Loop Spec 1 item flags (same convention as table_profiler's
             # "archetype": extra per-table metadata threaded alongside the

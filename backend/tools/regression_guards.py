@@ -2008,6 +2008,148 @@ def guard_lattice_header_band_recovery():
           infer_role(pd.Series(["1111.0100", "1111.10", "1112.02"])) == "code", "")
 
 
+def guard_plumber_strategy():
+    """Guard BJ — pdfplumber third extraction strategy + honest raw-frame scoring.
+
+    (1) quality.score_table on a RAW (integer RangeIndex) frame substitutes
+    populated-COLUMN coherence for the name-based header_coherence, which is
+    trivially 1.0 pre-headers. Before this, a hallucinated 21-column lattice
+    grid (6 real columns) scored 0.768 and never retried.
+    (2) _plumber_retry offers pdfplumber's own table finder as the 3rd
+    strategy on NON-scanned pages (OCR keeps the scanned slot), normalizing
+    its None cells and honoring the keep-max-score rule via _consider."""
+    print("Guard BJ — pdfplumber strategy + raw-frame column-coherence scoring")
+    import pandas as pd
+    from backend.app.extract.quality import score_table
+
+    # (a) raw frame with phantom columns scores LOW; same content named scores high
+    raw = pd.DataFrame([["a", "", "1", "", "2", "", "", ""],
+                        ["b", "", "3", "", "4", "", "", ""]])
+    named = pd.DataFrame({"state": ["a", "b"], "receipts": ["1", "3"],
+                          "disposed": ["2", "4"]})
+    s_raw, s_named = score_table(raw)["score"], score_table(named)["score"]
+    check("(a) phantom-column raw frame scores below retry threshold",
+          s_raw < 0.70 <= s_named, f"raw={s_raw} named={s_named}")
+
+    # (b) real page: feb_2024 p28 — lattice hallucinated 21 columns; the raw
+    # score now exposes it and a retry strategy wins
+    items = extract_tables(os.path.join(ROOT, "Testpdfs/cpgram_feb2024_p28.pdf"))
+    retried = [t for t in items if len(t["attempts"]) > 1]
+    check("(b) low-scoring lattice grid triggers a retry", bool(retried),
+          f"attempts={[t['attempts'] for t in items]}")
+    check("(b) retry strategy beats the lattice attempt",
+          all(t["best_score"] > t["attempts"][0]["score"] for t in retried),
+          f"{[(t['attempts'], t['best_score']) for t in retried]}")
+
+    # (c) _plumber_retry normalizes None cells and returns a scored frame
+    import pdfplumber
+    from backend.app.extract.table_extractor import _plumber_retry
+    with pdfplumber.open(os.path.join(ROOT, "Testpdfs/cpgram_feb2024_p28.pdf")) as pp:
+        r = _plumber_retry(pp, 1)
+    check("(c) plumber strategy finds the clean grid", r is not None and r[0].shape[1] >= 7,
+          f"got {None if r is None else r[0].shape}")
+    if r is not None:
+        cells = r[0].values.flatten().tolist()
+        check("(c) None cells normalized to empty strings",
+              all(c is not None for c in cells), "")
+
+
+def guard_stacked_table_split():
+    """Guard BK — vertically stacked annexures split into separate tables.
+
+    Stream frames holding [tail rows of table N] + ["Annexure N+1: …" title
+    row] + [table N+1's header band + data] are split at interior title rows;
+    each buried part carries its title row's text as caption. Before this,
+    header detection saw data before the band and the buried table's columns
+    all degraded to value_N (score 0.63 -> 0.92 on the real slice below)."""
+    print("Guard BK — stacked-annexure split (interior title-row boundaries)")
+    import pandas as pd
+    from backend.app.cleaning.panel_splitter import split_stacked_tables
+
+    # (a) synthetic: tail + title + band + data
+    df = pd.DataFrame([
+        ["", "Grand Total", "100", "200"],
+        ["A", "nnexure 3.2.: Top 10 States", "", ""],
+        ["S. No.", "Name of State/UT", "Nodal", "Total"],
+        ["1", "Government of Haryana", "72", "74"],
+        ["2", "Government of Kerala", "48", "49"],
+    ])
+    parts = split_stacked_tables(df)
+    check("(a) split into tail + buried table", len(parts) == 2, f"got {len(parts)}")
+    if len(parts) == 2:
+        check("(a) buried part carries the rejoined title as caption",
+              parts[1][1] is not None and parts[1][1].startswith("Annexure 3.2"),
+              f"got {parts[1][1]}")
+        check("(a) buried part starts at its header band",
+              str(parts[1][0].iloc[0, 0]).strip() == "S. No.", f"got\n{parts[1][0]}")
+
+    # (b) a frame without interior titles is untouched
+    plain = pd.DataFrame([["a", "1"], ["b", "2"], ["c", "3"],
+                          ["d", "4"], ["e", "5"]])
+    check("(b) no title row -> unchanged single part",
+          len(split_stacked_tables(plain)) == 1
+          and split_stacked_tables(plain)[0][1] is None, "")
+
+    # (c) real page: march_2023 p15 — Annexure 3.1 + buried 3.2
+    items = _pipeline(os.path.join(ROOT, "Testpdfs/cpgram_march2023_p15.pdf"))
+    caps = [str(i["name"] or "") for i in items]
+    check("(c) buried Annexure 3.2 emerges as its own titled table",
+          any("3.2" in c for c in caps), f"got {caps}")
+    buried = [i for i in items if "3.2" in str(i["name"] or "")]
+    if buried:
+        cols = list(buried[0]["df"].columns)
+        generic = sum(1 for c in cols
+                      if re.fullmatch(r"(col|value|code|label)(_\d+)?", str(c)))
+        check("(c) buried table's header band recovered (no generic columns)",
+              generic == 0, f"got {cols}")
+
+
+def guard_content_roles_and_placeholders():
+    """Guard BL — new content roles + placeholder-aware quality scoring.
+
+    column_namer: month columns, ascending serial columns (s_no), and state
+    names behind decorations ("Government of X", "17. Gujarat", "Haryana- 4")
+    now infer confident roles. quality.score_table: explicit missing-value
+    markers ("-", "NA", "Nil") no longer dilute numeric/text density (they
+    still count as filled); serial cells ("1.") are clean values.
+    table_validator._is_prose: the numeric bar is also a COUNT floor, so a
+    bullet-note fragment with one stray digit is still prose."""
+    print("Guard BL — month/s_no/decorated-state roles, placeholder scoring, prose floor")
+    import pandas as pd
+    from backend.app.standardization.column_namer import infer_role
+    from backend.app.extract.quality import score_table
+    from backend.app.validation.table_validator import _is_prose, _to_text_frame
+
+    check("(a) month-name column -> month",
+          infer_role(pd.Series(["January", "February", "March", "April'25"])) == "month", "")
+    check("(a) ascending ordinals -> s_no (tolerates one debris cell)",
+          infer_role(pd.Series(["1.", "2.", "3.", "4.", "5.", "6. N"])) == "s_no", "")
+    check("(a) non-ascending small ints are NOT s_no",
+          infer_role(pd.Series(["3", "1", "9", "2"])) != "s_no", "")
+    check("(a) 'Government of X' column -> state",
+          infer_role(pd.Series(["Government of Kerala", "Government of Bihar",
+                                "Government of Assam"])) == "state", "")
+    check("(a) ordinal-prefixed state list -> state",
+          infer_role(pd.Series(["1. Kerala", "2. Assam", "3. Tamil Nadu"])) == "state", "")
+    check("(a) count-suffixed state list -> state",
+          infer_role(pd.Series(["Haryana- 4", "Punjab- 2", "Rajasthan- 1"])) == "state", "")
+
+    # (b) placeholder dashes no longer tank a clean Yes/No status grid
+    grid = pd.DataFrame({"state": ["Kerala", "Bihar", "Assam"],
+                         "portal": ["Yes", "-", "Yes"],
+                         "link": ["Yes", "-", "-"]})
+    check("(b) dash placeholders excluded from density (score >= 0.8)",
+          score_table(grid)["score"] >= 0.8, f"got {score_table(grid)}")
+
+    # (c) bullet-note fragment with one stray digit is prose
+    frag = pd.DataFrame([["2", "•", "The monthly disposal in States and UTs "
+                          "decreased from many cases to fewer cases overall"],
+                         ["", "•", "Grievance redressal timelines improved in "
+                          "most Ministries compared with the previous month"]])
+    check("(c) bullet-note fragment detected as prose",
+          _is_prose(_to_text_frame(frag)), "")
+
+
 def guard_crushed_month_redistribution():
     """Guard BG — month labels crushed into one lattice header cell.
 
@@ -2087,7 +2229,9 @@ if __name__ == "__main__":
                    guard_wrapped_header_reconstruction, guard_text_table_scoring,
                    guard_month_header_recovery, guard_lattice_header_band_recovery,
                    guard_crushed_month_redistribution, guard_fragment_quarantine,
-                   guard_frame_title_recovery)
+                   guard_frame_title_recovery,
+                   guard_plumber_strategy, guard_stacked_table_split,
+                   guard_content_roles_and_placeholders)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

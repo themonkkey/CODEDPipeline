@@ -184,6 +184,71 @@ def split_side_by_side(df):
     return out if len(out) >= 2 else [df]
 
 
+# an interior sub-table title: "Annexure 3.2.: Top 10 …" / "Table 4 …".
+# Matched on the REJOINED row text because camelot's stream flavor often
+# splits the large decorative first capital into its own cell
+# ("A" | "nnexure 3.2.: Top 10 States…").
+_STACK_TITLE = re.compile(
+    r"^(table|tabel|statement|annexure|appendix)\s*[\(\-:.]?\s*\d",
+    re.IGNORECASE,
+)
+
+
+def split_stacked_tables(df):
+    """Split a frame holding SEVERAL tables stacked vertically.
+
+    Report pages that print multiple annexures one under another come out of
+    camelot's stream flavor as ONE frame: the tail rows of table N, then a
+    lone "Annexure N+1: …" title row, then table N+1's header band and data.
+    Downstream header detection then sees data before the band and every
+    column of the buried table degrades to value_N (observed across the
+    DARPG/CPGRAMS 2023 reports; the same stacked-annexure layout exists in
+    NCRB and RBI appendix sections).
+
+    Returns [(sub_df, title_or_None), …] — the first part carries None (its
+    caption comes from the page as usual); each subsequent part carries the
+    title-row text that introduced it. A frame without interior title rows
+    returns [(df, None)] unchanged. Conservative: a boundary is ONLY a row
+    whose populated cells rejoin into a title-pattern string, and parts
+    shorter than 2 rows are folded into their neighbour rather than emitted."""
+    if df is None or df.empty or len(df) < 5:
+        return [(df, None)]
+
+    boundaries = []
+    for i in range(1, len(df)):
+        cells = [str(v).strip() for v in df.iloc[i].tolist()]
+        non_empty = [c for c in cells if c and c not in ("nan", "None")]
+        # a title row is one long text run, at most spilling into 2-3 cells
+        if not non_empty or len(non_empty) > 3:
+            continue
+        joined = re.sub(r"\s+", " ", " ".join(non_empty))
+        # rejoin the split decorative capital ("A nnexure" -> "Annexure")
+        rejoined = re.sub(r"^([A-Za-z]) (?=[a-z]{2})", r"\1", joined)
+        if _STACK_TITLE.match(rejoined):
+            boundaries.append((i, rejoined[:300]))
+
+    if not boundaries:
+        return [(df, None)]
+
+    parts = []
+    prev, prev_title = 0, None
+    for i, title in boundaries:
+        # the FIRST part may be a 1-row tail of the previous page's table
+        # (a stray "Grand Total" row) — emit it anyway; validation/stitching
+        # downstream decides its fate. Later parts need >=2 rows (a header
+        # band alone is not a table).
+        min_rows = 1 if prev == 0 else 2
+        if i - prev >= min_rows:
+            parts.append((df.iloc[prev:i].reset_index(drop=True), prev_title))
+        prev, prev_title = i + 1, title
+    if len(df) - prev >= 2:
+        parts.append((df.iloc[prev:].reset_index(drop=True), prev_title))
+
+    if not parts or (len(parts) == 1 and parts[0][1] is None):
+        return [(df, None)]
+    return parts
+
+
 def split_panels(df):
     """
     If the dataframe looks like a two-panel table, flatten it to one row per

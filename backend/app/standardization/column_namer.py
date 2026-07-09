@@ -18,6 +18,17 @@ _GROUP_CODE = re.compile(r"^\d{3,4}$")
 _YEAR = re.compile(r"^(19|20)\d{2}([-–/]\d{2,4})?$")
 _WORD = re.compile(r"[A-Za-z]{2,}")
 _PERCENT = re.compile(r"^\(?-?\d+(\.\d+)?\s*%\)?$")
+# calendar month names — a column of these is a time dimension ("month"),
+# common in monthly-report annexures whose header row was lost upstream
+_MONTH = re.compile(
+    r"^(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|"
+    r"aug(ust)?|sep(t|tember)?|oct(ober)?|nov(ember)?|dec(ember)?)"
+    r"([,'\s\-–]+\d{2,4})?$",
+    re.IGNORECASE,
+)
+# serial-number cell: "1", "1.", "(1)" — only a serial column when the whole
+# column is an ascending run (see infer_role), never on lone matches
+_SERIAL = re.compile(r"^\(?\d{1,3}\)?\.?$")
 _DATE = re.compile(
     r"^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$"                       # 01/02/2024
     r"|^\d{1,2}\s*[-/ ]\s*[A-Za-z]{3,9}\s*[-/ ]\s*\d{2,4}$"    # 1 Jan 2024
@@ -40,6 +51,25 @@ _STATES = {
     "telangana", "tripura", "uttar pradesh", "uttarakhand", "west bengal",
     "jammu and kashmir", "ladakh", "delhi", "puducherry", "chandigarh",
 }
+
+
+# decorations around a state/UT name in govt reports: a "Government of
+# [the Union Territory of]" prefix (CPGRAMS-style listings), a leading
+# ordinal ("17. Gujarat" in wrapped multi-column state lists) and a trailing
+# count annotation ("Haryana- 4"). Stripped before state matching only —
+# the raw value is never rewritten.
+_STATE_PREFIX = re.compile(
+    r"^(?:\d{1,3}\s*[.)]\s*)?(?:government\s+of\s+)?(?:the\s+)?"
+    r"(?:union\s+territory\s+of\s+)?(?:nct\s+of\s+)?",
+    re.IGNORECASE,
+)
+_STATE_SUFFIX = re.compile(r"\s*[-–]\s*\d{1,3}$")
+
+
+def _state_core(value):
+    """The bare state/UT name inside a decorated cell, lowercased."""
+    v = _STATE_SUFFIX.sub("", _STATE_PREFIX.sub("", value.strip()))
+    return v.strip().lower()
 
 
 def _populated(series):
@@ -73,11 +103,25 @@ def infer_role(series):
         if len(widths) == 1 or any(v.startswith("0") for v in group):
             return "code"
 
+    # serial-number column: every cell a short bare number AND the sequence
+    # ascends from ~1 in unit steps — the "S. No." column whose header text
+    # was lost. Ascent is what separates a serial column from a measure of
+    # small counts (which varies non-monotonically).
+    serial = [v for v in vals if _SERIAL.match(v)]
+    if n >= 3 and len(serial) / n >= 0.8:
+        nums = [int(re.sub(r"[^\d]", "", v)) for v in serial]
+        if nums and nums[0] <= 2 and all(0 <= b - a <= 3 for a, b in zip(nums, nums[1:])):
+            return "s_no"
+
+    month = sum(1 for v in vals if _MONTH.match(v))
+    if month / n >= 0.6:
+        return "month"
+
     level = sum(1 for v in vals if v.lower() in _LEVEL_WORDS)
     if level / n >= 0.6:
         return "level"
 
-    state = sum(1 for v in vals if v.lower() in _STATES)
+    state = sum(1 for v in vals if _state_core(v) in _STATES)
     if state / n >= 0.6:
         return "state"
 
@@ -103,7 +147,7 @@ def infer_role(series):
 # High-confidence roles safe to name ANY archetype's generic col_N column with.
 # "name" is excluded — too generic to assert on an arbitrary text column (the
 # existing "label" fallback covers that case).
-_CONFIDENT = {"code", "level", "state", "year", "percentage", "date"}
+_CONFIDENT = {"code", "level", "state", "year", "percentage", "date", "month", "s_no"}
 
 
 def confident_role(series):

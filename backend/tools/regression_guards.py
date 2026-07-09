@@ -1864,6 +1864,60 @@ def guard_fragment_quarantine():
           validate_table(big)["passed"] is True, str(validate_table(big)))
 
 
+def guard_entity_series_stitching():
+    """Guard BM — entity-per-page report series must not stitch across
+    entities (table_stitcher._entity_variant_titles). NFHS-6 fact sheets
+    print an identical header row for every state; the header-equality merge
+    stitched Assam's pages into an "Arunachal Pradesh Key Indicators" blob
+    (user-reported: state sheets holding other states' data). Titles that
+    share a >=2-word tail but differ in their first word name different
+    ENTITIES of one series and block the merge; same-title continuations and
+    unrelated weak section names are unaffected."""
+    print("Guard BM — entity-series stitch boundary (table_stitcher)")
+    import pandas as pd
+    from backend.app.standardization.table_stitcher import (
+        _entity_variant_titles, stitch_tables,
+    )
+
+    check("state fact-sheet variants detected",
+          _entity_variant_titles("Arunachal Pradesh Key Indicators",
+                                 "Assam Key Indicators"), "")
+    check("hyphenated variants detected",
+          _entity_variant_titles("Haryana - Key Indicators",
+                                 "Karnataka - Key Indicators"), "")
+    check("same title is NOT an entity variant",
+          not _entity_variant_titles("Assam Key Indicators",
+                                     "Assam Key Indicators"), "")
+    check("unrelated section heading is NOT an entity variant",
+          not _entity_variant_titles("Andhra Pradesh Key Indicators",
+                                     "Maternal and Child Health"), "")
+
+    def _t(tid, name, page, rows, start):
+        # distinct row content per fragment — identical rows would be eaten
+        # by the post-merge dedupe and mask whether stitching happened
+        df = pd.DataFrame({
+            "indicator": [f"ind {start + i}" for i in range(rows)],
+            "nfhs6_urban": [f"1{start + i}.0" for i in range(rows)],
+            "nfhs6_rural": [f"2{start + i}.0" for i in range(rows)],
+            "nfhs6_total": [f"3{start + i}.0" for i in range(rows)],
+        })
+        return {"table_id": tid, "name": name, "page": page, "df": df,
+                "titled": True, "flavor": ""}
+
+    stitched = stitch_tables([
+        _t(1, "Arunachal Pradesh Key Indicators", 1, 8, 0),
+        _t(2, "Arunachal Pradesh Key Indicators", 2, 8, 8),   # true continuation
+        _t(3, "Assam Key Indicators", 3, 8, 16),              # NEXT STATE
+    ])
+    check("same-state continuation still merges",
+          any(s["df"].shape[0] == 16 for s in stitched),
+          str([(s["name"][:30], s["df"].shape) for s in stitched]))
+    check("next state stays a separate table (no cross-entity blob)",
+          len(stitched) == 2 and any(s["name"].startswith("Assam")
+                                     and s["df"].shape[0] == 8 for s in stitched),
+          str([(s["name"][:30], s["df"].shape) for s in stitched]))
+
+
 def guard_text_table_scoring():
     """Guard BD — archetype-aware quality scoring (quality.score_table).
     Text tables (Yes/No status grids, name/link catalogues) legitimately have
@@ -2231,7 +2285,7 @@ if __name__ == "__main__":
                    guard_crushed_month_redistribution, guard_fragment_quarantine,
                    guard_frame_title_recovery,
                    guard_plumber_strategy, guard_stacked_table_split,
-                   guard_content_roles_and_placeholders)
+                   guard_content_roles_and_placeholders, guard_entity_series_stitching)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

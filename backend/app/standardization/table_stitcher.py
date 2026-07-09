@@ -64,6 +64,25 @@ def _upgrade_names(base_cols, cont_cols):
     return out
 
 
+def _entity_variant_titles(a, b):
+    """True when two titles name DIFFERENT ENTITIES of the same table series:
+    a shared tail of >= 2 words with different leading words — "Arunachal
+    Pradesh Key Indicators" vs "Assam Key Indicators", "Haryana - Key
+    Indicators" vs "Karnataka - Key Indicators". Entity-per-page report
+    series (state fact sheets, ministry profiles, district handbooks) print
+    IDENTICAL headers for every entity, so the header-equality merge below
+    would otherwise stitch different states into one blob (observed on
+    NFHS-6: Assam's pages absorbed into an "Arunachal Pradesh" table).
+    Requires a real shared tail AND a differing first word, so genuinely
+    unrelated weak names (section headings like "Maternal and Child Health")
+    don't trip it and legitimate continuations still merge."""
+    ta = [w for w in re.split(r"[\s\-–:]+", str(a).lower()) if w]
+    tb = [w for w in re.split(r"[\s\-–:]+", str(b).lower()) if w]
+    if len(ta) < 3 or len(tb) < 3 or ta == tb:
+        return False
+    return ta[-2:] == tb[-2:] and ta[0] != tb[0]
+
+
 def _continues(prev, cur):
     """cur is a continuation of prev if it is on the next page with the
     same shape, and shares either the extracted title or the header row."""
@@ -90,6 +109,11 @@ def _continues(prev, cur):
         and _strong_title(cur["name"])
         and prev["name"] != cur["name"]
     ):
+        return False
+
+    # entity-variant titles ("<State> Key Indicators") are different tables
+    # even though the header row is identical for every entity in the series
+    if _entity_variant_titles(prev["name"], cur["name"]):
         return False
 
     # identical, meaningfully-named header row repeated on the next page —

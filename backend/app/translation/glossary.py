@@ -162,6 +162,20 @@ DEV_WORDS = {
     "शाखाएं": "Branches", "जमा": "Deposits", "ऋण": "Credit",
     "राजस्व": "Revenue", "कर": "Tax", "बजट": "Budget",
     "सहकारी": "Cooperative", "वाणिज्यिक": "Commercial",
+    # budget-at-a-glance vocabulary (common to every Indian state/central
+    # budget document, not specific to any one report)
+    "प्राप्तियां": "Receipts", "प्राप्तिय": "Receipts",
+    "घाटा": "Deficit", "आधिक्य": "Surplus",
+    "बजटीय": "Budgetary", "राजकोषीय": "Fiscal",
+    "प्रारम्भिक": "Primary", "आरम्भिक": "Primary",
+    "उधार": "Borrowings", "देनदारियां": "Liabilities",
+    "आकस्मिकता": "Contingency", "निधि": "Fund",
+    "वसूली": "Recovery", "अनुदान": "Grants-in-aid",
+    "सहायतार्थ": "Grants-in-aid", "विनियोग": "Appropriation",
+    "आबंटन": "Allocation", "योजना": "Plan",
+    "सहित": "With", "रहित": "Without", "उदय": "Uday",
+    "लेखा": "Accounts", "शीर्ष": "Head", "अनुमानित": "Estimated",
+    "संशोधित": "Revised",
     # infrastructure
     "सड़क": "Road", "सड़कें": "Roads", "मार्ग": "Road",
     "रेलवे": "Railway", "वाहन": "Vehicles", "वाहनों": "Vehicles",

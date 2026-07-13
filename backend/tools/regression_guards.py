@@ -94,8 +94,14 @@ def guard_des():
     # p148 = 4th page in slice -> table on that page
     p148 = [i for i in passed if i["page"] == 4]
     cols = list(p148[0]["df"].columns) if p148 else []
-    check("p148 cols start s_no|district|telephone_number_center_2020_21",
-          cols[:3] == ["s_no", "district", "telephone_number_center_2020_21"], f"got {cols[:4]}")
+    # column name updated from "telephone_number_center" to
+    # "number_telephone_center": the bilingual-suffix translator (Guard BO)
+    # now drops the leftover Kruti-soup Hindi label entirely and keeps the
+    # PDF's own literal English suffix verbatim ("Number Of Telephone
+    # Center") instead of a phrase built by decoding the Hindi half — a
+    # word-order change, not a translation regression.
+    check("p148 cols start s_no|district|number_telephone_center_2020_21",
+          cols[:3] == ["s_no", "district", "number_telephone_center_2020_21"], f"got {cols[:4]}")
     if p148:
         dvals = p148[0]["df"].iloc[:, 1].astype(str).head(5).tolist()
         eng = sum(1 for v in dvals if re.fullmatch(r"[A-Za-z .()-]+", v.strip()))
@@ -1918,6 +1924,116 @@ def guard_entity_series_stitching():
           str([(s["name"][:30], s["df"].shape) for s in stitched]))
 
 
+def guard_sparse_high_accuracy_stream_gate():
+    """Guard BN — a near-perfect stream parse must not be dropped for being
+    sparse. _process_stream_table's density gate rejected ANY table with
+    whitespace > 60, regardless of accuracy — real bilingual continuation
+    pages (multi-line rows leave many alignment cells blank) can legitimately
+    score whitespace just over 60 while parsing at ~99% accuracy. Observed
+    on a real state budget PDF: page 5 ("Budget at a Glance" continuation,
+    items 7-10a: Revenue/Fiscal/Primary Deficit) scored accuracy=98.98,
+    whitespace=61.11 and — because lattice found nothing on that page either
+    — the entire page silently vanished from the output with no quarantine
+    record. A near-perfect parse (accuracy >= 95) is now trusted even when
+    sparse; a mediocre one is still rejected so noisy pseudo-tables don't
+    sneak through."""
+    print("Guard BN — sparse-but-accurate stream tables are kept (table_extractor)")
+    import pandas as pd
+    from backend.app.extract.table_extractor import _process_stream_table
+
+    class _FakeTable:
+        def __init__(self, df, accuracy, whitespace):
+            self.df = df
+            self.parsing_report = {"accuracy": accuracy, "whitespace": whitespace}
+
+    real_df = pd.DataFrame([[str(i), f"row {i}", "", "", "", str(i * 10)]
+                            for i in range(10)])
+
+    check("high-accuracy sparse table (whitespace=61.11) is KEPT",
+          _process_stream_table(_FakeTable(real_df, 98.98, 61.11), None) is not None,
+          "regressed: R2016.pdf page 5 (Budget at a Glance, items 7-10a) would vanish again")
+
+    check("mediocre-accuracy sparse table (accuracy=85, whitespace=61.11) is still REJECTED",
+          _process_stream_table(_FakeTable(real_df, 85, 61.11), None) is None,
+          "the relaxation must not admit genuinely noisy pseudo-tables")
+
+    check("low-accuracy table (accuracy=70) is still REJECTED regardless of whitespace",
+          _process_stream_table(_FakeTable(real_df, 70, 10), None) is None,
+          "accuracy floor of 80 must remain in force")
+
+    check("high-accuracy but VERY sparse chart-debris (whitespace=82.14) is still REJECTED",
+          _process_stream_table(_FakeTable(real_df, 100.0, 82.14), None) is None,
+          "regressed: cpgram_dec2023_p11.pdf chart-axis debris (2000/6000/... rows) "
+          "would leak back into the output as a bogus table")
+
+
+def guard_bilingual_suffix_translation():
+    """Guard BO — bilingual Kruti-Dev + English cells resolve to the PDF's
+    own English wording, and genuine English text is never mistaken for
+    Kruti soup.
+
+    Indian government bilingual reports print a Kruti-Dev Hindi label
+    immediately followed by its own English translation on the same line
+    ("jktLo izkfIr;ka Revenue Receipts" = Hindi label + literal "Revenue
+    Receipts"). translate_text now trusts that literal English suffix
+    instead of trying to decode/translate the Hindi half word-by-word
+    (observed on a real Rajasthan state budget PDF: 'Budget at a Glance'
+    labels came out as a mix of raw ASCII soup and half-decoded Devanagari
+    sitting right next to the correct English text already in the cell).
+
+    Two false-positive traps found and fixed while building this:
+      - "Non-Tax Revenue": looks_kruti's slash-compound exception didn't
+        cover hyphens, so "Non-Tax" alone read as soup and got dropped from
+        the translated output.
+      - "A.Settlement Systems" / "B.Payment Systems" (RBI Table 61 category
+        labels, no Hindi involved at all): a list marker glued straight onto
+        a word with no space tripped looks_kruti's CamelCase-exception
+        fallback, and would have dropped "Settlement"/"Payment" entirely
+        from the extracted category column.
+
+    Also pins the decoder completeness fix (kruti_dev._SINGLE was missing
+    the 'I' glyph -> 'प्' half-form, so "izkfIr;ka" decoded to
+    "प्रािIतयां" instead of "प्राप्तियां")."""
+    print("Guard BO — bilingual Kruti-Dev/English cell resolution (hindi_translator)")
+    from backend.app.translation.hindi_translator import translate_text
+    from backend.app.translation.kruti_dev import kruti_to_unicode, looks_kruti
+
+    check("Hindi label + English suffix -> just the English suffix",
+          translate_text("jktLo izkfIr;ka Revenue Receipts") == "Revenue Receipts",
+          translate_text("jktLo izkfIr;ka Revenue Receipts"))
+    check("glossary-only soup word ('vuqnku') doesn't survive next to its translation",
+          translate_text("lgk;rkFkZ vuqnku Grants-in-aid") == "Grants-in-aid",
+          translate_text("lgk;rkFkZ vuqnku Grants-in-aid"))
+
+    check("hyphenated English compound ('Non-Tax Revenue') kept whole",
+          translate_text("v&dj jktLo Non-Tax Revenue") == "Non-Tax Revenue",
+          translate_text("v&dj jktLo Non-Tax Revenue"))
+    check("looks_kruti no longer flags 'Non-Tax' as soup",
+          not looks_kruti("Non-Tax"), "")
+
+    check("lowercase -ks plurals ('banks', 'stocks', 'networks') are NOT soup",
+          not any(looks_kruti(w) for w in ("banks", "stocks", "networks", "blocks")),
+          str([w for w in ("banks", "stocks", "networks", "blocks") if looks_kruti(w)]))
+    check("genuine soup plurals still caught after the -s exemption",
+          all(looks_kruti(w) for w in ("ftys", "ys[ks", "dks")),
+          str([w for w in ("ftys", "ys[ks", "dks") if not looks_kruti(w)]))
+
+    check("glued list-marker + word ('A.Settlement Systems') NOT torn apart",
+          translate_text("A.Settlement Systems") == "A.Settlement Systems",
+          translate_text("A.Settlement Systems"))
+    check("glued list-marker + word ('B.Payment Systems') NOT torn apart",
+          translate_text("B.Payment Systems") == "B.Payment Systems",
+          translate_text("B.Payment Systems"))
+
+    check("decoder gap fixed: 'izkfIr;ka' -> प्राप्तियां (was प्रािIतयां, missing 'I' glyph)",
+          kruti_to_unicode("izkfIr;ka") == "प्राप्तियां",
+          kruti_to_unicode("izkfIr;ka"))
+
+    check("no English suffix present -> falls back to decode (still legible Devanagari)",
+          translate_text("vk;&O;;d") == "आय-व्ययक",
+          translate_text("vk;&O;;d"))
+
+
 def guard_text_table_scoring():
     """Guard BD — archetype-aware quality scoring (quality.score_table).
     Text tables (Yes/No status grids, name/link catalogues) legitimately have
@@ -2285,7 +2401,9 @@ if __name__ == "__main__":
                    guard_crushed_month_redistribution, guard_fragment_quarantine,
                    guard_frame_title_recovery,
                    guard_plumber_strategy, guard_stacked_table_split,
-                   guard_content_roles_and_placeholders, guard_entity_series_stitching)
+                   guard_content_roles_and_placeholders, guard_entity_series_stitching,
+                   guard_sparse_high_accuracy_stream_gate,
+                   guard_bilingual_suffix_translation)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

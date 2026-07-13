@@ -35,7 +35,7 @@ _SINGLE = {
     # half forms
     "U": "न्", "R": "त्", "T": "ज्", "X": "ग्", "L": "स्",
     "D": "क्", "P": "च्", "C": "ब्", "O": "व्", "H": "भ्",
-    "F": "थ्", "E": "म्", "Y": "ल्", "W": "व्",
+    "F": "थ्", "E": "म्", "Y": "ल्", "W": "व्", "I": "प्",
     # matras / signs
     "k": "ा", "h": "ी", "q": "ु", "w": "ू", "s": "े", "S": "ै",
     "a": "ं", "¡": "ँ", "`": "ृ", "~": "्", "z": "्र",
@@ -146,6 +146,19 @@ def looks_kruti(token):
         ):
             return all(looks_kruti(p) for p in parts)
 
+    # hyphenated English compound ("Non-Tax", "Non-Plan"): the hyphen is a
+    # real word boundary here, not a Kruti glyph slot, so test the parts
+    # independently rather than letting one Titlecase half ("Non") mask a
+    # short second half ("Tax") that alone would still read as plausible
+    # English. Fiscal-report tables are full of these (Non-Tax Revenue,
+    # Non-Plan Expenditure) sitting right next to genuine Kruti soup.
+    if "-" in str(token):
+        parts = [p for p in str(token).split("-") if p]
+        if len(parts) >= 2 and all(
+            len(re.sub(r"[^A-Za-z]", "", p)) >= 2 for p in parts
+        ):
+            return all(looks_kruti(p) for p in parts)
+
     # hard glyph markers that never appear in real English words
     if any(ch in str(token) for ch in "[]~<>{}|"):
         return True
@@ -160,12 +173,35 @@ def looks_kruti(token):
     if any(c.isupper() for c in bare[1:]):
         chunks = re.findall(r"[A-Z][a-z]+|^[a-z]+", bare)
         if chunks and "".join(chunks) == bare and all(
-            len(c) >= 4
+            # >=5, not >=4: a stray capital glyph slot mid-word (Kruti's
+            # half-form letters are ALL uppercase) can accidentally split
+            # soup into two throwaway 4-letter chunks that each contain a
+            # lone vowel ("izkf"/"Irka" from "izkfIr;ka" = "प्राप्तियां"/
+            # Receipts) — genuine compounds like "MinistriesDepartments"
+            # keep chunks well above 5 letters, so this only tightens the
+            # false-positive floor, not the intended English-join case.
+            len(c) >= 5
             and any(v in c.lower() for v in "aeiou")
             and not re.search(r"q(?!u)", c.lower())
             for c in chunks
         ):
             return False
         return True
+
+    # lowercase English plural in -s ("banks", "blocks", "stocks", "networks"):
+    # the trailing 's' is the Kruti े-matra slot, so "ks" endings tripped the
+    # marker test for an entire class of real financial-table vocabulary.
+    # Exempt only when the STEM is itself vowel-bearing and marker-free —
+    # genuine soup plurals keep their markers after stripping ("ys[ks" ->
+    # "ys[k" has the hard '[' glyph) or have vowelless stems ("dks" -> "dk"),
+    # so they stay caught.
+    if bare.islower() and bare.endswith("s"):
+        stem = bare[:-1]
+        if (
+            len(stem) >= 3
+            and any(v in stem for v in "aeiou")
+            and not looks_kruti(stem)
+        ):
+            return False
 
     return any(m in token for m in _MARKERS)

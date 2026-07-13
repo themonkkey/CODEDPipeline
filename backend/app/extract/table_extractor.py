@@ -593,7 +593,18 @@ def _process_stream_table(table, plumber_pdf):
     except Exception:
         return None
 
-    if accuracy < 80 or whitespace > 60:
+    # Whitespace alone isn't noise: multi-line bilingual/annexure rows
+    # legitimately leave many alignment cells blank (observed: a 99%-accuracy,
+    # 39-row "Budget at a Glance" continuation page scored whitespace=61.11
+    # and was dropped whole-page by a flat >60 cutoff — real data, not a
+    # pseudo-table). Give near-perfect parses (accuracy >= 95) a little more
+    # whitespace headroom (up to 70) — but NOT unlimited: a chart's
+    # axis-label debris ("2000 | | 2508") also parses at ~100% accuracy and
+    # can clear 80+ whitespace simply because it's a couple of numbers
+    # scattered across mostly-empty rows (observed: cpgram_dec2023_p11.pdf
+    # chart-axis rows at whitespace=82.14). The 70 cap keeps that noise
+    # rejected while covering the genuine sparse-but-real table.
+    if accuracy < 80 or whitespace > (70 if accuracy >= 95 else 60):
         return None
 
     if len(df) < 4 or len(df.columns) < 3:

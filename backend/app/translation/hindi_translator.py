@@ -217,11 +217,65 @@ _ENGLISH_SAFE = {
 }
 
 
+# a list marker glued straight onto a real word with no space ("A.Settlement",
+# "B.Payment" — section-heading numbering in English-only PDFs). looks_kruti's
+# internal-capital/CamelCase check reads the stray leading capital before the
+# period as a broken compound and flags the whole thing as soup (observed:
+# RBI Table 61's "A.Settlement Systems" / "B.Payment Systems" category labels
+# lost "Settlement"/"Payment" entirely). A short list marker is never itself
+# Kruti soup, so this shape overrides the soup checks below.
+_LIST_MARKER_GLUED = re.compile(r"^[A-Za-z]{1,3}\.[A-Z][a-z]{2,}")
+
+
+def _is_english_shaped(tok):
+    """True when tok does NOT read as Kruti-Dev soup — the general test
+    used to grow a trailing English span token-by-token. Checks the
+    glossary decode too (not just the looks_kruti shape heuristic): a
+    short soup word can evade looks_kruti's markers entirely while still
+    decoding to a real, known Devanagari word ("vuqnku" = "अनुदान" =
+    Grants-in-aid) — without this it would be swept into the English
+    suffix and shown untranslated right next to its own translation."""
+    if _LIST_MARKER_GLUED.match(tok):
+        return True
+    bare = re.sub(r"[^A-Za-z]", "", tok)
+    return bool(bare) and not (looks_kruti(tok) or _soup_by_glossary(tok))
+
+
+def _split_bilingual_suffix(text):
+    """Indian government bilingual reports routinely print a Hindi label
+    immediately followed by its OWN English translation on the same line
+    ("jktLo izkfIr;ka Revenue Receipts" = Kruti-Dev "Revenue Receipts"
+    label + the literal English "Revenue Receipts"). Word-by-word
+    Hindi->English dictionaries can never cover arbitrary report content,
+    but the document is already handing us the authoritative translation —
+    trust it. Walk the cell backward collecting a maximal trailing run of
+    non-soup tokens; if that run contains real English content and the
+    remaining prefix is genuine Kruti soup, the prefix is the untranslated
+    label and the suffix IS its translation. Returns None when the cell
+    doesn't fit this shape (falls back to the decode/glossary path)."""
+    tokens = text.split(" ")
+    i = len(tokens)
+    while i > 0 and _is_english_shaped(tokens[i - 1]):
+        i -= 1
+    suffix = tokens[i:]
+    prefix = tokens[:i]
+    if not suffix or not any(re.search(r"[A-Za-z]{3,}", t) for t in suffix):
+        return None
+    if not prefix or not any(looks_kruti(t) for t in prefix):
+        return None
+    return " ".join(suffix)
+
+
 def translate_text(text):
     """Return English translation if known, else the original text."""
     norm = _normalize(text)
     if not norm:
         return text
+
+    bilingual = _split_bilingual_suffix(norm)
+    if bilingual is not None:
+        return bilingual
+
     if norm in LEGACY_MAP:
         return LEGACY_MAP[norm]
     loose = re.sub(r"\s+", "", norm).lower()

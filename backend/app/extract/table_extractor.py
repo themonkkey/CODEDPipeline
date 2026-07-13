@@ -689,6 +689,44 @@ def _plumber_retry(plumber_pdf, page_num, bbox=None):
         return None
 
 
+def _edge_retry(plumber_pdf, page_num, bbox=None):
+    """Loop Spec 1, strategy: right-edge column anchoring (edge_anchor.py).
+    Numeric values in ruled tables are right-aligned, so clustering their
+    right edges recovers the exact column grid where stream's whitespace
+    clustering merges columns and lattice hallucinates phantom ones (proven
+    on the Rajasthan Budget-At-A-Glance series). Restricted to the camelot
+    bbox when known, same as _plumber_retry. Returns (df, score) or None."""
+    if plumber_pdf is None:
+        return None
+    try:
+        import pandas as pd
+        from backend.app.extract.edge_anchor import extract_by_right_edge
+
+        page = plumber_pdf.pages[page_num - 1]
+        grid = extract_by_right_edge(page, bbox)
+        if not grid:
+            return None
+        df = pd.DataFrame(grid)
+        return df, score_table(df)["score"]
+    except Exception:
+        return None
+
+
+def _text_retry(plumber_pdf, page_num, bbox=None):
+    """The 3rd-attempt strategy for NON-scanned pages: try pdfplumber's table
+    finder and right-edge anchoring, hand back only the single better one so
+    the max-3-attempts cap still records exactly one attempt for this slot.
+    Returns (df, score, strategy) or None."""
+    best = None
+    pl = _plumber_retry(plumber_pdf, page_num, bbox)
+    if pl is not None:
+        best = (pl[0], pl[1], "plumber")
+    ea = _edge_retry(plumber_pdf, page_num, bbox)
+    if ea is not None and (best is None or ea[1] > best[1]):
+        best = (ea[0], ea[1], "edge")
+    return best
+
+
 def _consider(attempts, best, candidate_df, candidate_score, candidate_strategy):
     """Record one extraction attempt and apply Loop Spec 1's no-progress
     rule: a candidate only becomes the new best when it STRICTLY beats the
@@ -844,7 +882,8 @@ def extract_tables(pdf_path, pages=None):
                 best = _consider(attempts, best, stream_df, stream_score, stream_strategy)
 
         # 3rd attempt: OCR only helps scanned pages; on text-layer pages the
-        # third genuinely-different engine is pdfplumber's table finder.
+        # third slot is the better of pdfplumber's table finder and
+        # right-edge column anchoring (_text_retry).
         if best["score"] < LOW_QUALITY_THRESHOLD and len(attempts) < 3:
             if _is_scanned_page(page):
                 ocr_df = _ocr_extract_grid(table, plumber_pdf)
@@ -852,9 +891,9 @@ def extract_tables(pdf_path, pages=None):
                     ocr_score = score_table(ocr_df)["score"]
                     best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
             else:
-                pl = _plumber_retry(plumber_pdf, page, getattr(table, "_bbox", None))
-                if pl is not None:
-                    best = _consider(attempts, best, pl[0], pl[1], "plumber")
+                tr = _text_retry(plumber_pdf, page, getattr(table, "_bbox", None))
+                if tr is not None:
+                    best = _consider(attempts, best, tr[0], tr[1], tr[2])
 
         kept.append(_build_kept_item(
             page, best["df"], getattr(table, "_bbox", None),
@@ -913,11 +952,11 @@ def extract_tables(pdf_path, pages=None):
                             ocr_score = score_table(ocr_df)["score"]
                             best = _consider(attempts, best, ocr_df, ocr_score, "ocr")
                     else:
-                        pl = _plumber_retry(
+                        tr = _text_retry(
                             plumber_pdf, page, getattr(table, "_bbox", None)
                         )
-                        if pl is not None:
-                            best = _consider(attempts, best, pl[0], pl[1], "plumber")
+                        if tr is not None:
+                            best = _consider(attempts, best, tr[0], tr[1], tr[2])
 
                 kept.append(_build_kept_item(
                     page, best["df"], getattr(table, "_bbox", None),

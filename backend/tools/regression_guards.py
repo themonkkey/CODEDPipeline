@@ -2372,6 +2372,117 @@ def guard_crushed_month_redistribution():
           bool(month_tables), f"got {[list(i['df'].columns) for i in items]}")
 
 
+def guard_edge_anchor():
+    """Guard BM — right-edge column anchoring + word-layer repairs.
+
+    Generalized from the Rajasthan Budget-At-A-Glance series: numeric values
+    in ruled tables are right-aligned, so clustering their right edges gives
+    exact column assignment where camelot misaligns. Two word-layer defects
+    are repaired first: fused parenthesized values ("(a)(b)" one word) split
+    at ')(' boundaries, and split values ("-1" + "401108.93") merged. Wired
+    as _text_retry's second candidate in the 3rd-attempt slot (non-scanned
+    pages), still recording exactly one attempt for that slot."""
+    print("Guard BM — right-edge anchoring, fused-token split, split-value merge")
+    import pdfplumber
+    from backend.app.extract.edge_anchor import (
+        cluster_right_edges,
+        extract_by_right_edge,
+        grid_from_words,
+        merge_split_values,
+        split_fused_tokens,
+    )
+    from backend.app.extract.table_extractor import _text_retry
+
+    # (a) fused parenthesized values split with x apportioned by char count
+    toks = split_fused_tokens([{"x0": 100.0, "x1": 140.0, "top": 10.0,
+                                "text": "(1500000.00)(1500000.00)"}])
+    check("(a) fused token splits into two values",
+          [t["text"] for t in toks] == ["(1500000.00)", "(1500000.00)"],
+          f"got {[t['text'] for t in toks]}")
+    check("(a) split boxes tile the original x-range",
+          len(toks) == 2 and toks[0]["x0"] == 100.0 and toks[1]["x1"] == 140.0
+          and abs(toks[0]["x1"] - toks[1]["x0"]) < 1e-9,
+          f"got {toks}")
+    # a non-value ')(' word (prose) is untouched
+    prose = split_fused_tokens([{"x0": 0, "x1": 10, "top": 0, "text": "a)(b"}])
+    check("(a) non-numeric ')(' word untouched", prose[0]["text"] == "a)(b", "")
+
+    # (b) short leading fragment merges into its numeric neighbour
+    toks = merge_split_values([
+        {"x0": 100, "x1": 108, "top": 20, "text": "-1"},
+        {"x0": 110, "x1": 160, "top": 20, "text": "401108.93"},
+    ])
+    check("(b) '-1' + '401108.93' merge to one value",
+          [t["text"] for t in toks] == ["-1401108.93"],
+          f"got {[t['text'] for t in toks]}")
+    # a complete value never absorbs its neighbour, nor across a wide gap
+    keep = merge_split_values([
+        {"x0": 100, "x1": 130, "top": 20, "text": "123,456.00"},
+        {"x0": 132, "x1": 160, "top": 20, "text": "789.00"},
+    ])
+    check("(b) complete values stay separate", len(keep) == 2, f"got {keep}")
+    far = merge_split_values([
+        {"x0": 100, "x1": 108, "top": 20, "text": "-1"},
+        {"x0": 140, "x1": 160, "top": 20, "text": "401108.93"},
+    ])
+    check("(b) wide gap blocks the merge", len(far) == 2, f"got {far}")
+
+    # (c) right-edge clustering: anchors need >= 3 aligned edges
+    anchors = cluster_right_edges([200.1, 200.4, 199.8, 300.0, 300.2, 299.9,
+                                   50.0])
+    check("(c) two anchors from two tight clusters, stray edge dropped",
+          len(anchors) == 2 and abs(anchors[0] - 200.1) < 1
+          and abs(anchors[1] - 300.03) < 1, f"got {anchors}")
+
+    # (d) synthetic misaligned grid: values slot by right edge, not word order
+    words = []
+    for r in range(4):
+        top = 10.0 * (r + 1)
+        words.append({"x0": 10, "x1": 60, "top": top, "text": f"Row {r}"})
+        # col-1 values vary in width (left edges wander, right edges align)
+        w = 20 + 7 * r
+        words.append({"x0": 200 - w, "x1": 200, "top": top,
+                      "text": f"{10 ** r}.00"})
+        words.append({"x0": 280, "x1": 300, "top": top, "text": "555.00"})
+    grid = grid_from_words(words)
+    check("(d) synthetic grid: 3 columns (label + 2 anchors)",
+          grid is not None and all(len(r) == 3 for r in grid),
+          f"got {grid}")
+    check("(d) wandering-left-edge values all land in column 1",
+          grid is not None and [r[1] for r in grid] ==
+          ["1.00", "10.00", "100.00", "1000.00"], f"got {grid}")
+
+    # (e) real page: R2018 BAGE p3 — fused "(1500000.00)(1500000.00)" splits
+    # and the four value columns carry the repaired parenthesized values
+    with pdfplumber.open(os.path.join(ROOT, "Testpdfs/bage_r2018_p3.pdf")) as pdf:
+        g18 = extract_by_right_edge(pdf.pages[0])
+    check("(e) R2018 p3 rebuilds as label + 4 value columns",
+          g18 is not None and len(g18[0]) == 5, f"got {None if g18 is None else len(g18[0])}")
+    fused_rows = [r for r in (g18 or [])
+                  if r[2:] == ["(1500000.00)", "(1500000.00)", "(1500000.00)"]]
+    check("(e) fused Uday row split across its three columns",
+          bool(fused_rows), f"got {[r for r in (g18 or []) if '1500000' in ' '.join(r)]}")
+
+    # (f) real page: R2021 BAGE p5 — split "-1 401108.93" merges back
+    with pdfplumber.open(os.path.join(ROOT, "Testpdfs/bage_r2021_p5.pdf")) as pdf:
+        g21 = extract_by_right_edge(pdf.pages[0])
+    check("(f) split value '-1 401108.93' repaired to -1401108.93",
+          g21 is not None and any(r[1] == "-1401108.93" for r in g21),
+          f"got {[r[1] for r in (g21 or []) if r[1]]}")
+
+    # (g) integration: _text_retry offers the edge grid; the retry loop still
+    # records at most 3 attempts and the 3rd slot is a single strategy
+    with pdfplumber.open(os.path.join(ROOT, "Testpdfs/bage_r2021_p5.pdf")) as pdf:
+        tr = _text_retry(pdf, 1)
+        check("(g) _text_retry returns a scored (df, score, strategy)",
+              tr is not None and tr[2] in ("plumber", "edge"),
+              f"got {tr if tr is None else tr[2]}")
+    items = extract_tables(os.path.join(ROOT, "Testpdfs/bage_r2018_p3.pdf"))
+    check("(g) attempts capped at 3 with one strategy per slot",
+          items and all(len(t["attempts"]) <= 3 for t in items),
+          f"got {[t['attempts'] for t in items]}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -2403,7 +2514,7 @@ if __name__ == "__main__":
                    guard_plumber_strategy, guard_stacked_table_split,
                    guard_content_roles_and_placeholders, guard_entity_series_stitching,
                    guard_sparse_high_accuracy_stream_gate,
-                   guard_bilingual_suffix_translation)
+                   guard_bilingual_suffix_translation, guard_edge_anchor)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

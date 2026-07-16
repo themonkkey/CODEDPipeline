@@ -19,6 +19,13 @@ intentionally left untouched (see CLAUDE.md / task spec — do not re-tune).
 import re
 
 _CLEAN_NUM = re.compile(r"^\(?-?[\d,]+(\.\d+)?%?\)?$")
+# a cell holding a RUN of 4+ numeric values — the signature of a crushed
+# extraction (same signal as table_validator.MERGED_RUN, mirrored here so
+# the retry loop sees the problem at scoring time). Tokens may be
+# parenthesized: budget tables print negatives as "(1472196.08)".
+_MERGED_RUN = re.compile(
+    r"^(\(?-?[\d,]+(\.\d+)?%?\)?\s+){3,}\(?-?[\d,]+(\.\d+)?%?\)?$"
+)
 # Indian statistical reports carry data VALUES that are neither bare numbers
 # nor prose: fiscal-year ranges ("2024-25", "2023-2024"), currency/unit
 # amounts ("Rs. 40 lakh", "1,234 crore", "₹ 12.5 Cr"), and dates
@@ -153,10 +160,29 @@ def score_table(df):
             (numeric + clean_label) / len(non_empty) if non_empty else 0.0
         )
         score = round(0.4 * content_density + 0.4 * header_coherence + 0.2 * fill_rate, 3)
+
+    # Crushed extraction: cells holding runs of several values from adjacent
+    # columns/rows ("2530348.08 2652602.78 7364939.83"). validate_table
+    # quarantines these AFTER the pipeline, but by then the retry loop has
+    # already passed on the table — camelot's crushed grid can look filled
+    # and coherent enough to score above LOW_QUALITY_THRESHOLD, so the
+    # right-edge/stream retry that would have FIXED it never fires
+    # (observed: R2021 Budget-at-a-Glance p4 quarantined as merged_rows
+    # while _text_retry extracts it cleanly). Mirror the validator's signal
+    # here so a crushed table is low-quality at extraction time, while the
+    # retry can still rescue it.
+    merged_run = sum(1 for c in non_empty if _MERGED_RUN.match(c))
+    merged_frac = merged_run / len(non_empty) if non_empty else 0.0
+    if merged_frac > 0.15:
+        score = min(score, 0.45)
+    elif merged_frac > 0.05:
+        score = round(min(score, max(0.0, score - 0.15)), 3)
+
     return {
         "score": score,
         "numeric_density": round(numeric_density, 3),
         "header_coherence": round(header_coherence, 3),
         "fill_rate": round(fill_rate, 3),
+        "merged_frac": round(merged_frac, 3),
         "text_mode": text_mode,
     }

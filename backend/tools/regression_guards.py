@@ -2483,6 +2483,57 @@ def guard_edge_anchor():
           f"got {[t['attempts'] for t in items]}")
 
 
+
+
+def guard_paren_merged_run():
+    """Guard BO — crushed-run detection sees parenthesized negatives.
+
+    Budget tables print negatives as "(1472196.08)"; a crushed cell holding a
+    run of such values evaded both MERGED_RUN (validator) and the scoring
+    mirror, so a crushed plumber grid could outscore the honest stream table
+    and sail through validation (observed: R2021 p3 collapsed to a 4-row
+    frame scoring 0.8). Both regexes now accept parenthesized tokens, and
+    score_table caps a >15%-crushed table at 0.45 so the retry loop fires
+    while the table is still rescuable."""
+    print("Guard BO — parenthesized crushed-run detection (scoring + validator)")
+    import pandas as pd
+    from backend.app.extract.quality import score_table, LOW_QUALITY_THRESHOLD
+    from backend.app.validation.table_validator import MERGED_RUN, validate_table
+
+    # (a) validator regex matches parenthesized runs
+    check("(a) MERGED_RUN matches parenthesized value runs",
+          bool(MERGED_RUN.match("14011380.71 (1472196.08) 94779.11 2041.86")),
+          "parenthesized run not detected")
+
+    # (b) a crushed frame scores below the retry threshold
+    crushed_col = ["14011380.71 (1472196.08) 94779.11 2041.86 5778587.76"] * 3
+    df = pd.DataFrame({
+        "head": ["Revenue", "Capital", "Total"],
+        "vals": crushed_col,
+        "more": crushed_col,
+    })
+    s = score_table(df)
+    check("(b) crushed frame scores below LOW_QUALITY_THRESHOLD",
+          s["score"] < LOW_QUALITY_THRESHOLD and s["merged_frac"] > 0.15,
+          f"score={s['score']} merged_frac={s.get('merged_frac')}")
+
+    # (c) validator still quarantines it if it reaches validation anyway
+    status = validate_table(df)
+    check("(c) validator quarantines parenthesized crushed frame",
+          not status["passed"] and status["reason"] == "merged_rows",
+          f"got {status}")
+
+    # (d) clean tables keep their score: no false merged penalty
+    clean = pd.DataFrame({
+        "head": ["Revenue", "Capital", "Total"],
+        "v1": ["14011380.71", "(1472196.08)", "94779.11"],
+        "v2": ["5924498.17", "2041.86", "5778587.76"],
+    })
+    sc = score_table(clean)
+    check("(d) clean table unaffected by merged-run penalty",
+          sc["merged_frac"] == 0.0, f"merged_frac={sc['merged_frac']}")
+
+
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
@@ -2514,7 +2565,8 @@ if __name__ == "__main__":
                    guard_plumber_strategy, guard_stacked_table_split,
                    guard_content_roles_and_placeholders, guard_entity_series_stitching,
                    guard_sparse_high_accuracy_stream_gate,
-                   guard_bilingual_suffix_translation, guard_edge_anchor)
+                   guard_bilingual_suffix_translation, guard_edge_anchor,
+                   guard_paren_merged_run)
     # Guard G handles its own DOCLING_ENABLED toggle; only add it when explicitly requested
     extra_guards = (guard_nfhs_docling,) if _docling_requested else ()
     for g in base_guards + extra_guards:

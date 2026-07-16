@@ -1,8 +1,10 @@
 import re
 
 
+# tokens may be parenthesized: budget tables print negatives as
+# "(1472196.08)" — a run of those is just as crushed as a bare-number run
 MERGED_RUN = re.compile(
-    r"^(-?[\d,]+(\.\d+)?%?\s+){3,}-?[\d,]+(\.\d+)?%?$"
+    r"^(\(?-?[\d,]+(\.\d+)?%?\)?\s+){3,}\(?-?[\d,]+(\.\d+)?%?\)?$"
 )
 
 # small integer: page number range 1-999 (no decimals, no commas, no %)
